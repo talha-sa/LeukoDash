@@ -19,11 +19,7 @@ def show():
 
         st.subheader("Heatmap of Gene Expression")
         fig, ax = plt.subplots(figsize=(12, 6))
-        sns.heatmap(
-            numeric_df.iloc[:20, :20],
-            cmap="coolwarm",
-            ax=ax
-        )
+        sns.heatmap(numeric_df.iloc[:20, :20], cmap="coolwarm", ax=ax)
         ax.set_title("Gene Expression Heatmap")
         st.pyplot(fig)
 
@@ -37,4 +33,4 @@ def show():
         st.pyplot(fig2)
 
     else:
-        st.info("Please upload a CSV file to get start
+        st.info("Please upload a CSV file to get started.")
