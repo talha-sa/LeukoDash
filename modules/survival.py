@@ -7,6 +7,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.preprocessing import LabelEncoder
+import time
 
 def show():
     st.title("📈 Survival Prediction")
@@ -61,23 +62,30 @@ def show():
         le = LabelEncoder()
         y_encoded = le.fit_transform(y)
 
-        if st.button("Run Prediction Model"):
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y_encoded, test_size=0.2, random_state=42
-            )
+        if st.button("🚀 Run Prediction Model"):
+            with st.spinner("Training model and making predictions... please wait!"):
+                time.sleep(1)
 
-            model = LogisticRegression(max_iter=1000)
-            model.fit(X_train, y_train)
-            y_pred = model.predict(X_test)
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X, y_encoded, test_size=0.2, random_state=42
+                )
 
-            acc = accuracy_score(y_test, y_pred)
+                model = LogisticRegression(max_iter=1000)
+                model.fit(X_train, y_train)
+                y_pred = model.predict(X_test)
 
-            # Accuracy metric
-            col1, col2 = st.columns(2)
+                acc = accuracy_score(y_test, y_pred)
+
+            st.balloons()
+
+            # Metrics
+            col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Model Accuracy", f"{acc * 100:.2f}%")
             with col2:
                 st.metric("Patients Tested", len(y_test))
+            with col3:
+                st.metric("Features Used", X.shape[1])
 
             # Confusion Matrix
             st.subheader("Confusion Matrix")

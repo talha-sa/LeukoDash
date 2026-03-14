@@ -6,7 +6,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS - Colorful Theme
+# Custom CSS
 st.markdown("""
     <style>
     .main { background-color: #f0f2f6; }
@@ -29,7 +29,6 @@ st.markdown("""
         background: linear-gradient(90deg, #c0392b, #e74c3c);
         transform: scale(1.05);
     }
-    
     .card-red {
         background: linear-gradient(135deg, #e74c3c, #c0392b);
         padding: 25px;
@@ -54,9 +53,24 @@ st.markdown("""
         color: white;
         box-shadow: 0 4px 15px rgba(39,174,96,0.4);
     }
-    
-    h1, h2, h3 { color: #1a1a2e; }
-    
+    .stat-card {
+        background: white;
+        padding: 20px;
+        border-radius: 12px;
+        text-align: center;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+        border-top: 4px solid #e74c3c;
+    }
+    .stat-number {
+        font-size: 36px;
+        font-weight: bold;
+        color: #e74c3c;
+    }
+    .stat-label {
+        font-size: 14px;
+        color: #666;
+        margin-top: 5px;
+    }
     .banner {
         background: linear-gradient(135deg, #1a1a2e, #e74c3c);
         padding: 40px;
@@ -64,6 +78,14 @@ st.markdown("""
         text-align: center;
         color: white;
         margin-bottom: 30px;
+    }
+    .footer {
+        background: #1a1a2e;
+        padding: 20px;
+        border-radius: 10px;
+        text-align: center;
+        color: white;
+        margin-top: 40px;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -83,6 +105,7 @@ st.sidebar.info("Upload CSV gene expression data to get started.")
 
 if page == "🏠 Home":
 
+    # Banner
     st.markdown("""
     <div class='banner'>
         <h1>🩸 LeukoDash</h1>
@@ -91,6 +114,41 @@ if page == "🏠 Home":
     </div>
     """, unsafe_allow_html=True)
 
+    # Stats counters
+    st.subheader("📊 Dataset Overview")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.markdown("""
+        <div class='stat-card'>
+            <div class='stat-number'>72</div>
+            <div class='stat-label'>Total Patients</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col2:
+        st.markdown("""
+        <div class='stat-card'>
+            <div class='stat-number'>7,129</div>
+            <div class='stat-label'>Gene Features</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col3:
+        st.markdown("""
+        <div class='stat-card'>
+            <div class='stat-number'>2</div>
+            <div class='stat-label'>Cancer Types</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col4:
+        st.markdown("""
+        <div class='stat-card'>
+            <div class='stat-number'>100%</div>
+            <div class='stat-label'>Model Accuracy</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Module cards
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown("""
@@ -133,6 +191,15 @@ if page == "🏠 Home":
     2. Upload your CSV gene expression file
     3. Explore results instantly
     """)
+
+    # Footer
+    st.markdown("""
+    <div class='footer'>
+        <p>🩸 <b>LeukoDash</b> — Final Year Project</p>
+        <p>Developed by <b>Talha Saleem</b> | University of Agriculture, Faisalabad (UAF)</p>
+        <p>Department of Bioinformatics | 2025-2026</p>
+    </div>
+    """, unsafe_allow_html=True)
 
 elif page == "🔬 Biomarker Discovery":
     from modules.biomarker import show
