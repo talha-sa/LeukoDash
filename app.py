@@ -91,7 +91,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Sidebar
-st.sidebar.image("https://img.icons8.com/color/96/blood-drop.png", width=80)
+st.sidebar.markdown("<h1 style='text-align:center; color:white;'>🩸</h1>", unsafe_allow_html=True)
 st.sidebar.title("LeukoDash")
 st.sidebar.markdown("---")
 page = st.sidebar.radio("Navigation", [
