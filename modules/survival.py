@@ -4,10 +4,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.preprocessing import LabelEncoder
 import time
+import io
 
 def show():
     st.title("📈 Survival Prediction")
@@ -44,7 +47,7 @@ def show():
 
         st.success(f"Merged dataset: {merged.shape[0]} patients, {merged.shape[1]-1} genes")
 
-        # Show label distribution
+        # Cancer type distribution
         st.subheader("Cancer Type Distribution")
         fig1, ax1 = plt.subplots(figsize=(5, 3))
         counts = merged["cancer"].value_counts()
@@ -55,6 +58,14 @@ def show():
         ax1.set_ylabel("Number of Patients")
         st.pyplot(fig1)
 
+        # Model selection
+        st.subheader("Select ML Model")
+        model_choice = st.selectbox("Choose a model:", [
+            "Logistic Regression",
+            "Random Forest",
+            "Support Vector Machine (SVM)"
+        ])
+
         target_col = "cancer"
         X = merged.drop(columns=[target_col])
         y = merged[target_col]
@@ -63,17 +74,22 @@ def show():
         y_encoded = le.fit_transform(y)
 
         if st.button("🚀 Run Prediction Model"):
-            with st.spinner("Training model and making predictions... please wait!"):
+            with st.spinner(f"Training {model_choice}... please wait!"):
                 time.sleep(1)
 
                 X_train, X_test, y_train, y_test = train_test_split(
                     X, y_encoded, test_size=0.2, random_state=42
                 )
 
-                model = LogisticRegression(max_iter=1000)
+                if model_choice == "Logistic Regression":
+                    model = LogisticRegression(max_iter=1000)
+                elif model_choice == "Random Forest":
+                    model = RandomForestClassifier(n_estimators=100, random_state=42)
+                else:
+                    model = SVC(kernel="linear", random_state=42)
+
                 model.fit(X_train, y_train)
                 y_pred = model.predict(X_test)
-
                 acc = accuracy_score(y_test, y_pred)
 
             st.balloons()
@@ -99,11 +115,33 @@ def show():
             ax2.set_ylabel("Actual")
             st.pyplot(fig2)
 
+            # Feature Importance (Random Forest only)
+            if model_choice == "Random Forest":
+                st.subheader("🧬 Top 10 Most Important Genes")
+                importances = pd.Series(model.feature_importances_, index=X.columns)
+                top10 = importances.sort_values(ascending=False).head(10)
+                fig3, ax3 = plt.subplots(figsize=(10, 5))
+                sns.barplot(x=top10.values, y=top10.index, palette="Reds_r", ax=ax3)
+                ax3.set_title("Top 10 Feature Importances", fontsize=13, fontweight="bold")
+                ax3.set_xlabel("Importance Score")
+                st.pyplot(fig3)
+
             # Classification Report
             st.subheader("Classification Report")
             report = classification_report(y_test, y_pred,
                         target_names=le.classes_, output_dict=True)
-            st.dataframe(pd.DataFrame(report).transpose())
+            report_df = pd.DataFrame(report).transpose()
+            st.dataframe(report_df)
+
+            # Download Results
+            st.subheader("📥 Download Results")
+            csv = report_df.to_csv(index=True)
+            st.download_button(
+                label="Download Classification Report as CSV",
+                data=csv,
+                file_name="leukodash_results.csv",
+                mime="text/csv"
+            )
 
     else:
         st.info("Please upload both files to get started.")
