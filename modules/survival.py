@@ -26,8 +26,10 @@ def show():
         actual_df = pd.read_csv(label_file)
 
         # Save to session state
-        st.session_state.total_patients = train_df.select_dtypes(include=[np.number]).shape[1]
-        st.session_state.gene_features = f"{train_df.select_dtypes(include=[np.number]).shape[0]:,}"
+        numeric_cols = train_df.select_dtypes(include=[np.number])
+        numeric_cols = numeric_cols[[col for col in numeric_cols.columns if "call" not in str(col)]]
+        st.session_state.total_patients = numeric_cols.shape[1]
+        st.session_state.gene_features = f"{numeric_cols.shape[0]:,}"
         st.session_state.data_loaded = True
 
         # Transpose train data
@@ -37,10 +39,21 @@ def show():
         train_T.columns = [f"gene_{i}" for i in range(train_T.shape[1])]
         train_T.index = train_T.index.astype(str)
 
-        # Prepare labels
-        actual_df.columns = actual_df.columns.str.strip()
+        # Prepare labels — fix column name issues
+        actual_df.columns = actual_df.columns.str.strip().str.lower()
+
+        # Check if patient column exists
+        if "patient" not in actual_df.columns:
+            st.error(f"Could not find 'patient' column. Found columns: {list(actual_df.columns)}")
+            return
+
         actual_df["patient"] = actual_df["patient"].astype(str)
         actual_df = actual_df.set_index("patient")
+
+        # Check if cancer column exists
+        if "cancer" not in actual_df.columns:
+            st.error(f"Could not find 'cancer' column. Found columns: {list(actual_df.columns)}")
+            return
 
         # Merge
         merged = train_T.join(actual_df, how="inner")
