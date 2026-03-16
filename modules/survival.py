@@ -10,7 +10,6 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.preprocessing import LabelEncoder
 import time
-import io
 
 def show():
     st.title("📈 Survival Prediction")
@@ -25,6 +24,11 @@ def show():
     if train_file and label_file:
         train_df = pd.read_csv(train_file)
         actual_df = pd.read_csv(label_file)
+
+        # Save to session state
+        st.session_state.total_patients = train_df.select_dtypes(include=[np.number]).shape[1]
+        st.session_state.gene_features = f"{train_df.select_dtypes(include=[np.number]).shape[0]:,}"
+        st.session_state.data_loaded = True
 
         # Transpose train data
         train_df = train_df.drop(columns=["Gene Description", "Gene Accession Number"], errors="ignore")

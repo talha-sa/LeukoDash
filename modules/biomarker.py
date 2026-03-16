@@ -12,23 +12,25 @@ def show():
 
     if uploaded_file is not None:
         df = pd.read_csv(uploaded_file)
+
+        # Save to session state
+        st.session_state.total_patients = df.select_dtypes(include=[np.number]).shape[1]
+        st.session_state.gene_features = f"{df.select_dtypes(include=[np.number]).shape[0]:,}"
+        st.session_state.data_loaded = True
+
         st.subheader("Preview of Uploaded Data")
         st.dataframe(df.head())
 
         st.subheader("Basic Statistics")
         st.write(df.describe())
 
-        # Get numeric columns only, remove call columns
         numeric_df = df.select_dtypes(include=[np.number])
         numeric_df = numeric_df[[col for col in numeric_df.columns if "call" not in str(col)]]
 
-        # Top variable genes
         variances = numeric_df.var().sort_values(ascending=False).head(10)
-        gene_names = df["Gene Description"].iloc[variances.index.astype(int)].values if "Gene Description" in df.columns else variances.index
 
         st.subheader("🧬 Top 10 Biomarker Genes (Highest Variance)")
 
-        # Color palette
         colors = sns.color_palette("Reds_r", 10)
 
         fig, ax = plt.subplots(figsize=(12, 6))
@@ -38,7 +40,6 @@ def show():
         ax.set_xlabel("Variance Score", fontsize=12)
         ax.set_title("Top 10 High-Variance Genes (Potential Biomarkers)", fontsize=14, fontweight="bold")
 
-        # Add value labels on bars
         for i, (bar, val) in enumerate(zip(bars, variances.values[::-1])):
             ax.text(bar.get_width() + 500, bar.get_y() + bar.get_height()/2,
                    f'{val:,.0f}', va='center', fontsize=9)
@@ -48,7 +49,6 @@ def show():
         plt.tight_layout()
         st.pyplot(fig)
 
-        # Pie chart of top 5 genes
         st.subheader("📊 Top 5 Biomarkers — Variance Distribution")
         top5 = variances.head(5)
         fig2, ax2 = plt.subplots(figsize=(7, 7))
@@ -67,7 +67,6 @@ def show():
         ax2.set_title("Variance Share of Top 5 Biomarkers", fontsize=13, fontweight="bold")
         st.pyplot(fig2)
 
-        # Download biomarkers
         st.subheader("📥 Download Biomarker Results")
         biomarker_df = pd.DataFrame({
             "Rank": range(1, 11),

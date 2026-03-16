@@ -12,14 +12,18 @@ def show():
 
     if uploaded_file is not None:
         df = pd.read_csv(uploaded_file)
+
+        # Save to session state
+        st.session_state.total_patients = df.select_dtypes(include=[np.number]).shape[1]
+        st.session_state.gene_features = f"{df.select_dtypes(include=[np.number]).shape[0]:,}"
+        st.session_state.data_loaded = True
+
         st.subheader("Preview of Data")
         st.dataframe(df.head())
 
-        # Clean numeric data
         numeric_df = df.select_dtypes(include=[np.number])
         numeric_df = numeric_df[[col for col in numeric_df.columns if "call" not in str(col)]]
 
-        # Stats
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Total Genes", numeric_df.shape[0])
@@ -28,7 +32,6 @@ def show():
         with col3:
             st.metric("Missing Values", numeric_df.isnull().sum().sum())
 
-        # Heatmap
         st.subheader("🔥 Gene Expression Heatmap")
         st.markdown("Showing first 20 genes × 20 samples")
         fig, ax = plt.subplots(figsize=(14, 7))
@@ -45,7 +48,6 @@ def show():
         ax.set_ylabel("Gene Index")
         st.pyplot(fig)
 
-        # Gene distribution
         st.subheader("📈 Gene Expression Distribution")
         gene_index = st.slider("Select Gene Index", 0, min(99, numeric_df.shape[0]-1), 0)
         gene_data = numeric_df.iloc[gene_index]
@@ -60,7 +62,6 @@ def show():
         ax2.spines['right'].set_visible(False)
         st.pyplot(fig2)
 
-        # Boxplot
         st.subheader("📦 Sample Expression Boxplot")
         st.markdown("Showing first 20 samples")
         fig3, ax3 = plt.subplots(figsize=(14, 5))
@@ -72,7 +73,6 @@ def show():
         plt.xticks(rotation=45)
         st.pyplot(fig3)
 
-        # Download
         st.subheader("📥 Download Processed Data")
         csv = numeric_df.to_csv(index=False)
         st.download_button(
