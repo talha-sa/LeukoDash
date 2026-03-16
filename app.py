@@ -1,4 +1,6 @@
 import streamlit as st
+import pandas as pd
+import numpy as np
 
 st.set_page_config(
     page_title="LeukoDash",
@@ -114,34 +116,56 @@ if page == "🏠 Home":
     </div>
     """, unsafe_allow_html=True)
 
+    # Dynamic file upload on home page
+    st.subheader("📂 Upload Your Dataset (Optional)")
+    home_file = st.file_uploader("Upload your gene expression CSV to update stats", type=["csv"], key="home")
+
+    # Default stats
+    total_patients = 72
+    gene_features = "7,129"
+    cancer_types = 2
+    accuracy = "100%"
+
+    # If user uploads a file — update stats dynamically
+    if home_file is not None:
+        try:
+            home_df = pd.read_csv(home_file)
+            numeric_df = home_df.select_dtypes(include=[np.number])
+            numeric_df = numeric_df[[col for col in numeric_df.columns if "call" not in str(col)]]
+            total_patients = numeric_df.shape[1]
+            gene_features = f"{numeric_df.shape[0]:,}"
+            st.success(f"Dataset loaded! {numeric_df.shape[0]:,} genes × {numeric_df.shape[1]} samples detected.")
+        except:
+            st.warning("Could not read file. Showing default stats.")
+
     # Stats counters
     st.subheader("📊 Dataset Overview")
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.markdown("""
+        st.markdown(f"""
         <div class='stat-card'>
-            <div class='stat-number'>72</div>
+            <div class='stat-number'>{total_patients}</div>
             <div class='stat-label'>Total Patients</div>
         </div>
         """, unsafe_allow_html=True)
     with col2:
-        st.markdown("""
+        st.markdown(f"""
         <div class='stat-card'>
-            <div class='stat-number'>7,129</div>
+            <div class='stat-number'>{gene_features}</div>
             <div class='stat-label'>Gene Features</div>
         </div>
         """, unsafe_allow_html=True)
     with col3:
-        st.markdown("""
+        st.markdown(f"""
         <div class='stat-card'>
-            <div class='stat-number'>2</div>
+            <div class='stat-number'>{cancer_types}</div>
             <div class='stat-label'>Cancer Types</div>
         </div>
         """, unsafe_allow_html=True)
     with col4:
-        st.markdown("""
+        st.markdown(f"""
         <div class='stat-card'>
-            <div class='stat-number'>100%</div>
+            <div class='stat-number'>{accuracy}</div>
             <div class='stat-label'>Model Accuracy</div>
         </div>
         """, unsafe_allow_html=True)
