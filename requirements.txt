@@ -3,4 +3,9 @@ pandas
 numpy
 matplotlib
 seaborn
+plotly
+scipy
+gseapy
+GEOparse
 scikit-learn
+lifelines
