@@ -97,6 +97,8 @@ if "gene_features" not in st.session_state:
     st.session_state.gene_features = "7,129"
 if "data_loaded" not in st.session_state:
     st.session_state.data_loaded = False
+if "model_accuracy" not in st.session_state:
+    st.session_state["model_accuracy"] = "N/A"
 
 # Sidebar
 st.sidebar.markdown("<h1 style='text-align:center; color:white;'>🩸</h1>", unsafe_allow_html=True)
@@ -122,12 +124,13 @@ if page == "🏠 Home":
     </div>
     """, unsafe_allow_html=True)
 
-    # Stats counters — dynamic based on session state
+    # Stats counters
     st.subheader("📊 Dataset Overview")
     if st.session_state.data_loaded:
         st.success("✅ Stats updated based on your uploaded dataset!")
 
     col1, col2, col3, col4 = st.columns(4)
+
     with col1:
         st.markdown(f"""
         <div class='stat-card'>
@@ -135,6 +138,7 @@ if page == "🏠 Home":
             <div class='stat-label'>Total Patients</div>
         </div>
         """, unsafe_allow_html=True)
+
     with col2:
         st.markdown(f"""
         <div class='stat-card'>
@@ -142,6 +146,7 @@ if page == "🏠 Home":
             <div class='stat-label'>Gene Features</div>
         </div>
         """, unsafe_allow_html=True)
+
     with col3:
         st.markdown(f"""
         <div class='stat-card'>
@@ -149,14 +154,15 @@ if page == "🏠 Home":
             <div class='stat-label'>Cancer Types</div>
         </div>
         """, unsafe_allow_html=True)
+
     with col4:
-    model_acc = st.session_state.get("model_accuracy", "N/A")
-    st.markdown(f"""
-    <div class='stat-card'>
-        <div class='stat-number'>{model_acc}</div>
-        <div class='stat-label'>Model Accuracy</div>
-    </div>
-    """, unsafe_allow_html=True)
+        model_acc = st.session_state.get("model_accuracy", "N/A")
+        st.markdown(f"""
+        <div class='stat-card'>
+            <div class='stat-number'>{model_acc}</div>
+            <div class='stat-label'>Model Accuracy</div>
+        </div>
+        """, unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
