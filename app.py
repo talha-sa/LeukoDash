@@ -150,12 +150,13 @@ if page == "🏠 Home":
         </div>
         """, unsafe_allow_html=True)
     with col4:
-        st.markdown(f"""
-        <div class='stat-card'>
-            <div class='stat-number'>100%</div>
-            <div class='stat-label'>Model Accuracy</div>
-        </div>
-        """, unsafe_allow_html=True)
+    model_acc = st.session_state.get("model_accuracy", "N/A")
+    st.markdown(f"""
+    <div class='stat-card'>
+        <div class='stat-number'>{model_acc}</div>
+        <div class='stat-label'>Model Accuracy</div>
+    </div>
+    """, unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
