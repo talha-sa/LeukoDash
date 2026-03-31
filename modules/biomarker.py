@@ -121,7 +121,7 @@ def run_pathway_enrichment(gene_list, database="KEGG_2021_Human"):
         enr = gp.enrichr(
             gene_list=gene_list,
             gene_sets=database,
-            organism="Human",
+            organism="human",
             outdir=None,
             verbose=False
         )
