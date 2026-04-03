@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.cluster import KMeans
@@ -11,11 +10,10 @@ from sklearn.preprocessing import StandardScaler
 def show():
     st.title("📊 Gene Expression Visualization")
     st.markdown("Explore gene expression patterns, cluster patients, and compare leukemia subtypes.")
-
     st.markdown("---")
 
+    # ── Data Input ──
     st.subheader("📂 Step 1: Load Data")
-
     input_method = st.radio(
         "Choose input method:",
         ["📁 Upload CSV File", "♻️ Use Data from Biomarker Module"],
@@ -43,6 +41,7 @@ def show():
 
     if df is not None and not df.empty:
 
+        # Clean numeric data
         numeric_df = df.select_dtypes(include=[np.number])
         numeric_df = numeric_df.dropna(how="all")
         numeric_df.index = numeric_df.index.astype(str)
@@ -51,6 +50,7 @@ def show():
         st.session_state.gene_features = f"{numeric_df.shape[0]:,}"
         st.session_state.data_loaded = True
 
+        # ── Preview ──
         st.subheader("👁️ Data Preview")
         st.dataframe(numeric_df.head(5), use_container_width=True)
 
@@ -61,6 +61,7 @@ def show():
 
         st.markdown("---")
 
+        # ── Groups ──
         st.subheader("👥 Step 2: Define Sample Groups (Optional)")
         use_groups = st.checkbox("I want to define sample groups for comparison")
 
@@ -69,16 +70,17 @@ def show():
 
         if use_groups:
             all_cols = list(numeric_df.columns)
-            col1, col2 = st.columns(2)
-            with col1:
+            c1, c2 = st.columns(2)
+            with c1:
                 group1_name = st.text_input("Group 1 Name", value="ALL")
                 group1_cols = st.multiselect("Group 1 Samples", all_cols, default=all_cols[:len(all_cols)//2])
-            with col2:
+            with c2:
                 group2_name = st.text_input("Group 2 Name", value="AML")
                 group2_cols = st.multiselect("Group 2 Samples", all_cols, default=all_cols[len(all_cols)//2:])
 
         st.markdown("---")
 
+        # ── Heatmap ──
         st.subheader("🔥 Interactive Gene Expression Heatmap")
         n_genes = st.slider("Number of top variable genes to show", 10, 50, 20)
         n_samples = st.slider("Number of samples to show", 10, min(50, numeric_df.shape[1]), 20)
@@ -98,6 +100,7 @@ def show():
 
         st.markdown("---")
 
+        # ── Gene Search ──
         st.subheader("🔍 Gene Search")
         gene_options = list(numeric_df.index.astype(str))
         selected_gene = st.selectbox("Search and select a gene:", gene_options)
@@ -145,10 +148,11 @@ def show():
                 c4.metric("Max", f"{gene_expr.max():.2f}")
 
             except Exception as e:
-                st.warning(f"Could not find gene '{selected_gene}'. Please try another.")
+                st.warning(f"Could not display gene '{selected_gene}'. Try another.")
 
         st.markdown("---")
 
+        # ── PCA / t-SNE ──
         st.subheader("🔵 Dimensionality Reduction — PCA / t-SNE")
         st.markdown("Reduces thousands of genes into 2D so you can see how samples cluster.")
 
@@ -158,44 +162,56 @@ def show():
         if st.button(f"▶️ Run {dr_method} + Clustering"):
             with st.spinner(f"Running {dr_method}... ⏳"):
                 try:
-                    X = numeric_df.T.fillna(0)
-                    X = X.loc[:, X.std() > 0]
-                    scaler = StandardScaler()
-                   
-X_np = X_df.values.astype(np.float64)  # convert to numpy first
-X_scaled = scaler.fit_transform(X_np)  # now works perfectly
-coords_np = np.array(coords, dtype=np.float64)  # same for KMeans
+                    # Transpose so rows=samples, cols=genes
+                    X_df = numeric_df.T.fillna(0)
+                    sample_names = list(X_df.index)
 
+                    # Remove constant columns
+                    std_vals = X_df.std(axis=0)
+                    X_df = X_df.loc[:, std_vals > 0]
+
+                    # Convert to numpy array explicitly — fixes sklearn compatibility
+                    X_np = X_df.values.astype(np.float64)
+
+                    # Scale
+                    scaler = StandardScaler()
+                    X_scaled = scaler.fit_transform(X_np)
+
+                    # Dimensionality reduction
                     if dr_method == "PCA":
                         n_comp = min(2, X_scaled.shape[0], X_scaled.shape[1])
-                        reducer = PCA(n_components=n_comp, random_state=42)
-                        coords = reducer.fit_transform(X_scaled)
-                        explained = reducer.explained_variance_ratio_ * 100
-                        axis_labels = {
-                            "x": f"PC1 ({explained[0]:.1f}% variance)",
-                            "y": f"PC2 ({explained[1]:.1f}% variance)" if len(explained) > 1 else "PC2"
-                        }
+                        pca = PCA(n_components=n_comp, random_state=42)
+                        coords = pca.fit_transform(X_scaled)
+                        explained = pca.explained_variance_ratio_ * 100
+                        x_label = f"PC1 ({explained[0]:.1f}% variance)"
+                        y_label = f"PC2 ({explained[1]:.1f}% variance)" if len(explained) > 1 else "PC2"
                     else:
-                        n_pca = min(50, X_scaled.shape[0] - 1, X_scaled.shape[1])
+                        n_pca = min(50, X_scaled.shape[0]-1, X_scaled.shape[1])
                         X_pca = PCA(n_components=n_pca, random_state=42).fit_transform(X_scaled)
-                        perp = min(30, len(X) - 1)
+                        perp = min(30, len(sample_names)-1)
                         coords = TSNE(n_components=2, random_state=42, perplexity=perp).fit_transform(X_pca)
-                        axis_labels = {"x": "t-SNE 1", "y": "t-SNE 2"}
+                        x_label = "t-SNE 1"
+                        y_label = "t-SNE 2"
 
-                    n_clust = min(n_clusters, len(X))
-                    cluster_labels = KMeans(n_clusters=n_clust, random_state=42, n_init=10).fit_predict(coords)
+                    # K-Means on numpy array
+                    n_clust = min(n_clusters, len(sample_names))
+                    coords_np = np.array(coords, dtype=np.float64)
+                    km = KMeans(n_clusters=n_clust, random_state=42, n_init=10)
+                    cluster_labels = km.fit_predict(coords_np)
+                    cluster_names = [f"Cluster {int(c)+1}" for c in cluster_labels]
 
                     plot_df = pd.DataFrame({
-                        "x": coords[:, 0], "y": coords[:, 1],
-                        "Sample": list(X.index),
-                        "Cluster": [f"Cluster {c+1}" for c in cluster_labels]
+                        "x": coords_np[:, 0],
+                        "y": coords_np[:, 1],
+                        "Sample": sample_names,
+                        "Cluster": cluster_names
                     })
 
                     if use_groups and group1_cols and group2_cols:
-                        def get_group(sample):
-                            if sample in group1_cols:
+                        def get_group(s):
+                            if s in group1_cols:
                                 return group1_name
-                            elif sample in group2_cols:
+                            elif s in group2_cols:
                                 return group2_name
                             return "Other"
                         plot_df["Group"] = plot_df["Sample"].apply(get_group)
@@ -204,7 +220,8 @@ coords_np = np.array(coords, dtype=np.float64)  # same for KMeans
                         color_col = "Cluster"
 
                     st.session_state["dr_plot_df"] = plot_df
-                    st.session_state["dr_axis_labels"] = axis_labels
+                    st.session_state["dr_x_label"] = x_label
+                    st.session_state["dr_y_label"] = y_label
                     st.session_state["dr_color_col"] = color_col
                     st.session_state["dr_method"] = dr_method
                     st.success("✅ Done!")
@@ -214,24 +231,28 @@ coords_np = np.array(coords, dtype=np.float64)  # same for KMeans
 
         if "dr_plot_df" in st.session_state:
             plot_df = st.session_state["dr_plot_df"]
-            axis_labels = st.session_state["dr_axis_labels"]
+            x_label = st.session_state["dr_x_label"]
+            y_label = st.session_state["dr_y_label"]
             color_col = st.session_state["dr_color_col"]
             dr_label = st.session_state["dr_method"]
 
             fig_dr = px.scatter(
-                plot_df, x="x", y="y", color=color_col,
+                plot_df, x="x", y="y",
+                color=color_col,
                 hover_name="Sample",
                 title=f"{dr_label} Plot — Sample Clustering",
-                labels=axis_labels,
-                template="plotly_white", height=500,
+                labels={"x": x_label, "y": y_label},
+                template="plotly_white",
+                height=500,
                 color_discrete_sequence=px.colors.qualitative.Set1
             )
             fig_dr.update_traces(marker=dict(size=10, opacity=0.8))
             st.plotly_chart(fig_dr, use_container_width=True)
-            st.info("💡 Each dot = one patient sample. Samples close together have similar gene expression.")
+            st.info("💡 Each dot = one patient. Dots close together = similar gene expression.")
 
         st.markdown("---")
 
+        # ── Group Comparison ──
         if use_groups and group1_cols and group2_cols:
             st.subheader(f"⚖️ {group1_name} vs {group2_name} Comparison")
             top_genes = numeric_df.var(axis=1).nlargest(20).index
@@ -243,8 +264,8 @@ coords_np = np.array(coords, dtype=np.float64)  # same for KMeans
                 "Group": [group1_name] * len(top_genes) + [group2_name] * len(top_genes)
             })
             fig_compare = px.bar(
-                compare_df, x="Gene", y="Mean Expression", color="Group",
-                barmode="group",
+                compare_df, x="Gene", y="Mean Expression",
+                color="Group", barmode="group",
                 color_discrete_map={group1_name: "#e74c3c", group2_name: "#2980b9"},
                 title=f"Top 20 Variable Genes: {group1_name} vs {group2_name}",
                 template="plotly_white", height=450
@@ -253,6 +274,7 @@ coords_np = np.array(coords, dtype=np.float64)  # same for KMeans
             st.plotly_chart(fig_compare, use_container_width=True)
             st.markdown("---")
 
+        # ── Download ──
         st.subheader("📥 Download Results")
         csv = numeric_df.to_csv()
         st.download_button(
