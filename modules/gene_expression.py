@@ -161,7 +161,10 @@ def show():
                     X = numeric_df.T.fillna(0)
                     X = X.loc[:, X.std() > 0]
                     scaler = StandardScaler()
-                    X_scaled = scaler.fit_transform(X)
+                   
+X_np = X_df.values.astype(np.float64)  # convert to numpy first
+X_scaled = scaler.fit_transform(X_np)  # now works perfectly
+coords_np = np.array(coords, dtype=np.float64)  # same for KMeans
 
                     if dr_method == "PCA":
                         n_comp = min(2, X_scaled.shape[0], X_scaled.shape[1])
