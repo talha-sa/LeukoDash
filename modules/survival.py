@@ -225,7 +225,6 @@ def show():
                 model.fit(X_train_scaled, y_train)
                 y_pred = model.predict(X_test_scaled)
                 acc = accuracy_score(y_test, y_pred)
-st.session_state["model_accuracy"] = f"{acc*100:.1f}%"
 
                 # Cross validation
                 cv_scores = None
