@@ -14,7 +14,7 @@
 
 ---
 
-**LeukoDash** is a no-code bioinformatics web dashboard that empowers researchers and clinicians to perform end-to-end leukemia gene expression analysis — from raw data to survival curves and ML-based cancer classification — all through an intuitive visual interface.
+**LeukoDash** is a no-code bioinformatics web dashboard for end-to-end leukemia gene expression analysis — from raw data to survival curves, pathway enrichment, and ML-based cancer classification — all through an intuitive visual interface.
 
 </div>
 
@@ -26,44 +26,125 @@
 |--------|---------|
 | 🧬 Dataset | Golub et al. (1999) — 72 patients, 7,129 genes |
 | 🎯 ML Accuracy | Up to **100%** on ALL vs AML classification |
-| 🧪 Analysis Modules | 7 scientifically rigorous modules |
+| 🧪 Analysis Modules | 3 fully integrated scientific modules |
+| 🌐 GEO Integration | Fetch datasets directly from NCBI GEO database |
 | 💻 No Coding Required | Fully interactive web interface |
 | ☁️ Cloud Deployed | Live on Streamlit Cloud |
 
 ---
 
-## 🔬 Analysis Modules
+## 🔬 Modules
+
+### 🧫 Module 1 — Biomarker Discovery
+
+> Identify statistically significant leukemia biomarkers using differential expression analysis.
 
 <details>
-<summary>📌 <b>Click to explore all modules</b></summary>
+<summary>📌 <b>See full feature list</b></summary>
 
 <br>
 
-### 🧫 1. Biomarker Discovery
-Identifies the top most variable genes across patient samples — these serve as potential diagnostic biomarkers for leukemia subtype distinction.
+**Data Input:**
+- 🌐 Fetch directly from **NCBI GEO Database** by entering an accession number (e.g. `GSE1432`)
+- 📁 Upload your own gene expression CSV file
 
-### 📊 2. Gene Expression Visualization
-Explore expression patterns through interactive **heatmaps** and **distribution histograms** to understand gene activity across ALL and AML samples.
+**Analysis:**
+- Define two sample groups (e.g. ALL vs AML) manually
+- Runs **independent t-test** per gene across both groups
+- Calculates **Log2 Fold Change**, **p-value**, and significance thresholds (`|log2FC| > 1` and `p < 0.05`)
+- Classifies genes as **Upregulated**, **Downregulated**, or **Not Significant**
 
-### 📉 3. Differential Expression Analysis *(New!)*
-Statistically compares gene expression between ALL and AML groups, highlighting significantly up- and down-regulated genes using volcano plots and fold-change analysis.
+**Visualizations:**
+- 🌋 **Volcano Plot** — interactive scatter with color-coded gene directions and top-10 gene labels
+- 🧬 **Top 20 Significant Genes Table** with fold change and p-values
 
-### 🔵 4. Clustering Analysis *(New!)*
-Unsupervised clustering (K-Means / Hierarchical) to discover natural groupings in the data — revealing hidden biological structure without labels.
+**Pathway Enrichment:**
+- 🔗 Maps significant genes to **KEGG biological pathways** via **Enrichr** (gseapy)
+- Displays top 10 enriched pathways as an interactive bar chart
 
-### 🌀 5. Dimensionality Reduction — PCA & UMAP *(New!)*
-Reduces 7,129 gene dimensions down to 2D/3D space for visual exploration of sample separation, variance, and cluster structure.
+**Downloads:**
+- ⬇️ Full DE results (CSV)
+- ⬇️ Significant genes only (CSV)
 
-### 📈 6. Kaplan-Meier Survival Curves *(New!)*
-Generates survival probability plots to compare patient outcomes between leukemia subtypes — a clinically critical visualization used in oncology research.
+</details>
 
-### 🤖 7. ML-Based Leukemia Classification *(Upgraded!)*
-Train and compare **three machine learning models** head-to-head:
-- Logistic Regression
-- Random Forest 🌲
-- Support Vector Machine (SVM)
+---
 
-Each model outputs accuracy, confusion matrix, and classification report for full transparency.
+### 📊 Module 2 — Gene Expression Visualization
+
+> Explore expression patterns, cluster patients, and compare leukemia subtypes visually.
+
+<details>
+<summary>📌 <b>See full feature list</b></summary>
+
+<br>
+
+**Data Input:**
+- 📁 Upload a gene expression CSV
+- ♻️ Or reuse data already loaded in the Biomarker module (shared session state)
+
+**Visualizations:**
+- 🔥 **Interactive Heatmap** — adjustable top-N variable genes × samples (RdBu color scale)
+- 🔍 **Gene Search** — search any gene and view its expression bar chart across all samples
+- Per-gene stats: Mean, Std Dev, Min, Max
+
+**Dimensionality Reduction + Clustering:**
+- 🔵 **PCA** — with explained variance % on axes
+- 🌀 **t-SNE** — with automatic PCA pre-reduction for speed
+- 🤖 **K-Means clustering** — adjustable number of clusters (2–6)
+- Interactive scatter plot — each dot = one patient
+
+**Group Comparison:**
+- Define ALL vs AML sample groups
+- 📊 Grouped bar chart of **top 20 variable genes** comparing mean expression across both groups
+
+**Downloads:**
+- ⬇️ Cleaned expression data (CSV)
+
+</details>
+
+---
+
+### 📈 Module 3 — Survival Prediction
+
+> Predict leukemia subtype (ALL vs AML) using ML and visualize patient survival.
+
+<details>
+<summary>📌 <b>See full feature list</b></summary>
+
+<br>
+
+**Data Input:**
+- Upload gene expression CSV (train data)
+- Upload labels CSV (`actual.csv` with patient IDs and cancer type)
+- Auto-merges both datasets by patient ID
+
+**Kaplan-Meier Survival Analysis:**
+- 📉 Plots survival probability over time for ALL vs AML
+- Uses real `time` + `event` columns if available in labels file
+- Falls back to **simulated KM curves** for demonstration if survival columns are absent
+
+**ML Model Training:**
+- Choose from 3 models:
+  - 🌲 **Random Forest**
+  - 📐 **Logistic Regression**
+  - ⚡ **Support Vector Machine (SVM)**
+- Adjustable test/train split (10–40%)
+- Optional **5-Fold Cross Validation** for more reliable accuracy estimates
+
+**Results & Evaluation:**
+- 🔢 Interactive **Confusion Matrix** (heatmap)
+- 📈 **Cross-Validation accuracy bar chart** with mean line
+- 🧬 **Top 15 Feature Importances** (Random Forest only)
+- 📋 Full **Classification Report** (precision, recall, F1-score)
+
+**Individual Patient Prediction:**
+- 🩺 Upload a single patient's gene expression file
+- Instantly predicts ALL or AML with **model confidence %**
+
+**Downloads:**
+- ⬇️ Classification report (CSV)
+- ⬇️ Trained model as `.pkl` file
 
 </details>
 
@@ -89,11 +170,14 @@ Each model outputs accuracy, confusion matrix, and classification report for ful
 | Library | Purpose |
 |---------|---------|
 | `Streamlit` | Web app framework |
-| `Scikit-learn` | ML models & evaluation |
-| `Pandas / NumPy` | Data processing |
-| `Matplotlib / Seaborn` | Visualization |
-| `SciPy` | Statistical testing |
+| `Scikit-learn` | ML models, PCA, t-SNE, K-Means, evaluation |
 | `Lifelines` | Kaplan-Meier survival analysis |
+| `GEOparse` | Fetch datasets from NCBI GEO |
+| `gseapy` | Pathway enrichment via Enrichr (KEGG) |
+| `SciPy` | t-test for differential expression |
+| `Plotly` | Interactive charts & visualizations |
+| `Pandas / NumPy` | Data processing |
+| `Matplotlib / Seaborn` | Static plots |
 
 ---
 
