@@ -7,51 +7,75 @@ from scipy import stats
 import GEOparse
 import gseapy as gp
 import os
-import tempfile
+import gc
 
 # ─────────────────────────────────────────────
 # HELPER: Parse GEO dataset into expression df
 # ─────────────────────────────────────────────
-def fetch_geo_data(accession):
+@st.cache_data(show_spinner=False)
+def fetch_geo_data(accession, max_genes=1000):
     """
-    Downloads a GEO dataset by accession number (e.g. GSE1432)
-    and returns a cleaned expression DataFrame.
-    Rows = genes, Columns = samples
+    Safely downloads a GEO dataset with memory protection.
+    - Limits to top most variable genes
+    - Uses float32 to save memory
+    - Cached so it only downloads once per session
     """
     try:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            gse = GEOparse.get_GEO(geo=accession.strip(), destdir=tmpdir, silent=True)
+        # Create cache folder so it doesn't re-download every time
+        cache_dir = "./data/geo_cache/"
+        os.makedirs(cache_dir, exist_ok=True)
 
-            # Get the first platform's gene table
-            gpl_name = list(gse.gpls.keys())[0]
-            gpl = gse.gpls[gpl_name]
+        gse = GEOparse.get_GEO(
+            geo=accession.strip(),
+            destdir=cache_dir,
+            silent=True
+        )
 
-            # Build expression matrix from all GSM samples
-            expr_data = {}
-            for gsm_name, gsm in gse.gsms.items():
-                if gsm.table is not None and not gsm.table.empty:
-                    # Use ID_REF as index and VALUE as expression
-                    sample_df = gsm.table.set_index("ID_REF")["VALUE"]
-                    expr_data[gsm_name] = pd.to_numeric(sample_df, errors="coerce")
+        # Build expression matrix
+        expr_data = {}
+        for gsm_name, gsm in gse.gsms.items():
+            if gsm.table is not None and not gsm.table.empty:
+                sample_df = gsm.table.set_index("ID_REF")["VALUE"]
+                expr_data[gsm_name] = pd.to_numeric(sample_df, errors="coerce")
 
-            if not expr_data:
-                return None, "Could not extract expression data from this GEO dataset."
+        if not expr_data:
+            return None, "Could not extract expression data from this GEO dataset."
 
-            expr_df = pd.DataFrame(expr_data)
+        expr_df = pd.DataFrame(expr_data)
 
-            # Try to map probe IDs to gene symbols using platform table
-            if "Gene Symbol" in gpl.table.columns:
-                gene_map = gpl.table.set_index("ID")["Gene Symbol"]
-                expr_df.index = expr_df.index.map(lambda x: gene_map.get(x, x))
-            elif "GENE_ASSIGNMENT" in gpl.table.columns:
-                gene_map = gpl.table.set_index("ID")["GENE_ASSIGNMENT"]
-                expr_df.index = expr_df.index.map(lambda x: str(gene_map.get(x, x)).split("//")[1].strip() if "//" in str(gene_map.get(x, x)) else x)
+        # Map probe IDs to gene symbols
+        gpl_name = list(gse.gpls.keys())[0]
+        gpl = gse.gpls[gpl_name]
 
-            expr_df = expr_df.dropna(how="all")
-            expr_df = expr_df[~expr_df.index.duplicated(keep="first")]
+        if "Gene Symbol" in gpl.table.columns:
+            gene_map = gpl.table.set_index("ID")["Gene Symbol"]
+            expr_df.index = expr_df.index.map(lambda x: gene_map.get(x, x))
+        elif "GENE_ASSIGNMENT" in gpl.table.columns:
+            gene_map = gpl.table.set_index("ID")["GENE_ASSIGNMENT"]
+            expr_df.index = expr_df.index.map(
+                lambda x: str(gene_map.get(x, x)).split("//")[1].strip()
+                if "//" in str(gene_map.get(x, x)) else x
+            )
 
-            return expr_df, None
+        expr_df = expr_df.dropna(how="all")
+        expr_df = expr_df[~expr_df.index.duplicated(keep="first")]
 
+        # ✅ MEMORY PROTECTION - Limit to top variable genes
+        if expr_df.shape[0] > max_genes:
+            top_genes = expr_df.var(axis=1).nlargest(max_genes).index
+            expr_df = expr_df.loc[top_genes]
+
+        # ✅ MEMORY PROTECTION - Use float32 instead of float64
+        expr_df = expr_df.astype("float32")
+
+        # ✅ Free unused memory
+        del gse
+        gc.collect()
+
+        return expr_df, None
+
+    except MemoryError:
+        return None, "❌ Dataset too large for server memory. Try reducing max genes using the slider."
     except Exception as e:
         return None, f"Error fetching GEO data: {str(e)}"
 
@@ -76,13 +100,11 @@ def run_differential_expression(df, group1_cols, group2_cols):
         mean1 = g1.mean()
         mean2 = g2.mean()
 
-        # Fold change: Group2 vs Group1
         fold_change = (mean2 + 1e-9) / (mean1 + 1e-9)
         log2FC = np.log2(fold_change)
 
-        # T-test
         t_stat, pvalue = stats.ttest_ind(g1, g2)
-        pvalue = max(pvalue, 1e-300)  # avoid log(0)
+        pvalue = max(pvalue, 1e-300)
         neg_log10_pval = -np.log10(pvalue)
 
         results.append({
@@ -97,7 +119,6 @@ def run_differential_expression(df, group1_cols, group2_cols):
 
     result_df = pd.DataFrame(results)
 
-    # Mark significant genes: |log2FC| > 1 AND p-value < 0.05
     result_df["Significant"] = (
         (result_df["Log2FC"].abs() > 1) &
         (result_df["P_Value"] < 0.05)
@@ -113,10 +134,6 @@ def run_differential_expression(df, group1_cols, group2_cols):
 # HELPER: Pathway Enrichment via Enrichr
 # ─────────────────────────────────────────────
 def run_pathway_enrichment(gene_list, database="KEGG_2021_Human"):
-    """
-    Takes a list of significant gene names and runs Enrichr pathway analysis.
-    Returns top enriched pathways.
-    """
     try:
         enr = gp.enrichr(
             gene_list=gene_list,
@@ -157,22 +174,38 @@ def show():
     # ── GEO Fetch ──
     if "GEO" in input_method:
         st.info("💡 Example accession numbers: **GSE1432** (ALL/AML), **GSE2658** (Multiple Myeloma)")
+
         accession = st.text_input("Enter GEO Accession Number (e.g. GSE1432):")
+
+        # ✅ Gene limit slider — prevents crash on large datasets
+        max_genes = st.slider(
+            "⚙️ Max genes to load (lower = safer & faster, higher = more detail)",
+            min_value=500,
+            max_value=5000,
+            value=1000,
+            step=500,
+            help="Large datasets with too many genes can crash the app. This slider limits the genes to the most variable ones."
+        )
 
         if st.button("🔄 Fetch Dataset"):
             if accession:
                 with st.spinner(f"Downloading {accession} from GEO... this may take a minute ⏳"):
-                    df, error = fetch_geo_data(accession)
+                    df, error = fetch_geo_data(accession, max_genes)
                     if error:
                         st.error(error)
+                        st.info("💡 Try reducing the max genes slider or use a smaller dataset.")
                     else:
                         st.session_state["geo_df"] = df
+                        st.session_state["geo_accession"] = accession
                         st.success(f"✅ Dataset loaded! Shape: {df.shape[0]} genes × {df.shape[1]} samples")
+                        if df.shape[0] == max_genes:
+                            st.warning(f"⚠️ Dataset was large — auto-limited to top {max_genes} most variable genes to prevent crash.")
             else:
                 st.warning("Please enter an accession number.")
 
         if "geo_df" in st.session_state:
             df = st.session_state["geo_df"]
+            st.info(f"📦 Currently loaded: **{st.session_state.get('geo_accession', 'GEO Dataset')}** — {df.shape[0]} genes × {df.shape[1]} samples")
 
     # ── CSV Upload ──
     else:
@@ -184,7 +217,6 @@ def show():
     # ── If data is loaded ──
     if df is not None and not df.empty:
 
-        # Update session state counters for home page
         st.session_state.total_patients = df.shape[1]
         st.session_state.gene_features = f"{df.shape[0]:,}"
         st.session_state.data_loaded = True
@@ -264,12 +296,10 @@ def show():
             height=550
         )
 
-        # Add threshold lines
         fig.add_hline(y=-np.log10(0.05), line_dash="dash", line_color="gray", annotation_text="p=0.05")
         fig.add_vline(x=1, line_dash="dash", line_color="gray")
         fig.add_vline(x=-1, line_dash="dash", line_color="gray")
 
-        # Label top 10 significant genes
         top_genes = sig_genes.nsmallest(10, "P_Value")
         for _, row in top_genes.iterrows():
             fig.add_annotation(
@@ -316,7 +346,6 @@ def show():
 
             st.dataframe(pathway_df[["Term", "Overlap", "P-value", "Genes"]].reset_index(drop=True), use_container_width=True)
 
-            # Bar chart of top pathways
             fig2 = px.bar(
                 pathway_df.head(10),
                 x=-np.log10(pathway_df["P-value"].head(10)),
