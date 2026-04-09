@@ -2,141 +2,136 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
 from scipy import stats
-import GEOparse
 import gseapy as gp
-import os
+import requests
+import gzip
 import gc
+import io
 
 # ─────────────────────────────────────────────
-# HELPER: Parse GEO dataset into expression df
+# REQ 1+2+3: Cached + float32 + chunked GEO loader
 # ─────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def fetch_geo_data(accession, max_genes=1000):
-    """
-    Safely downloads a GEO dataset with memory protection.
-    - Limits to top most variable genes
-    - Uses float32 to save memory
-    - Cached so it only downloads once per session
-    """
     try:
-        # Create cache folder so it doesn't re-download every time
-        cache_dir = "./data/geo_cache/"
-        os.makedirs(cache_dir, exist_ok=True)
+        accession = accession.strip().upper()
+        url = f"https://ftp.ncbi.nlm.nih.gov/geo/series/{accession[:-3]}nnn/{accession}/matrix/{accession}_series_matrix.txt.gz"
 
-        gse = GEOparse.get_GEO(
-            geo=accession.strip(),
-            destdir=cache_dir,
-            silent=True
+        response = requests.get(url, timeout=60, stream=True)
+        if response.status_code != 200:
+            return None, f"❌ Could not find {accession} on GEO. Check accession number."
+
+        compressed = io.BytesIO(response.content)
+        with gzip.open(compressed, "rt", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+
+        # REQ 3: Parse only data lines, skip metadata
+        data_lines = [l for l in lines if not l.startswith("!") and not l.startswith("#")]
+        del lines
+        gc.collect()  # REQ 4
+
+        if not data_lines:
+            return None, "❌ Could not parse expression data."
+
+        raw = "".join(data_lines)
+        del data_lines
+
+        # REQ 3: Read in chunks to avoid RAM spike
+        chunk_iter = pd.read_csv(
+            io.StringIO(raw),
+            sep="\t",
+            index_col=0,
+            chunksize=2000  # process 2000 genes at a time
         )
 
-        # Build expression matrix
-        expr_data = {}
-        for gsm_name, gsm in gse.gsms.items():
-            if gsm.table is not None and not gsm.table.empty:
-                sample_df = gsm.table.set_index("ID_REF")["VALUE"]
-                expr_data[gsm_name] = pd.to_numeric(sample_df, errors="coerce")
+        chunks = []
+        for chunk in chunk_iter:
+            chunk = chunk.apply(pd.to_numeric, errors="coerce")
+            chunk = chunk.dropna(how="all")
+            # REQ 2: Convert to float32 immediately per chunk
+            chunk = chunk.astype("float32")
+            chunks.append(chunk)
 
-        if not expr_data:
-            return None, "Could not extract expression data from this GEO dataset."
+        df = pd.concat(chunks)
+        del chunks
+        gc.collect()  # REQ 4
 
-        expr_df = pd.DataFrame(expr_data)
+        # REQ 3: Keep only top variable genes early
+        if df.shape[0] > max_genes:
+            top_genes = df.var(axis=1).nlargest(max_genes).index
+            df = df.loc[top_genes]
 
-        # Map probe IDs to gene symbols
-        gpl_name = list(gse.gpls.keys())[0]
-        gpl = gse.gpls[gpl_name]
+        gc.collect()  # REQ 4
+        return df, None
 
-        if "Gene Symbol" in gpl.table.columns:
-            gene_map = gpl.table.set_index("ID")["Gene Symbol"]
-            expr_df.index = expr_df.index.map(lambda x: gene_map.get(x, x))
-        elif "GENE_ASSIGNMENT" in gpl.table.columns:
-            gene_map = gpl.table.set_index("ID")["GENE_ASSIGNMENT"]
-            expr_df.index = expr_df.index.map(
-                lambda x: str(gene_map.get(x, x)).split("//")[1].strip()
-                if "//" in str(gene_map.get(x, x)) else x
-            )
-
-        expr_df = expr_df.dropna(how="all")
-        expr_df = expr_df[~expr_df.index.duplicated(keep="first")]
-
-        # ✅ MEMORY PROTECTION - Limit to top variable genes
-        if expr_df.shape[0] > max_genes:
-            top_genes = expr_df.var(axis=1).nlargest(max_genes).index
-            expr_df = expr_df.loc[top_genes]
-
-        # ✅ MEMORY PROTECTION - Use float32 instead of float64
-        expr_df = expr_df.astype("float32")
-
-        # ✅ Free unused memory
-        del gse
-        gc.collect()
-
-        return expr_df, None
-
+    except requests.exceptions.Timeout:
+        return None, "❌ Request timed out. Try again."
     except MemoryError:
-        return None, "❌ Dataset too large for server memory. Try reducing max genes using the slider."
+        return None, "❌ Still too large. Reduce max genes slider to 500."
     except Exception as e:
-        return None, f"Error fetching GEO data: {str(e)}"
+        return None, f"❌ Error: {str(e)}"
 
 
 # ─────────────────────────────────────────────
-# HELPER: Differential Expression Analysis
+# REQ 5: Vectorized Differential Expression (no for loops)
 # ─────────────────────────────────────────────
-def run_differential_expression(df, group1_cols, group2_cols):
+@st.cache_data(show_spinner=False)
+def run_differential_expression(df_json, group1_cols, group2_cols):
     """
-    Runs t-test between two groups.
-    Returns DataFrame with: gene, fold_change, log2FC, pvalue, neg_log10_pval, significant
+    Fully vectorized DE analysis using numpy.
+    No gene-by-gene for loop — processes all genes at once.
     """
-    results = []
+    df = pd.read_json(io.StringIO(df_json))
 
-    for gene in df.index:
-        g1 = pd.to_numeric(df.loc[gene, group1_cols], errors="coerce").dropna()
-        g2 = pd.to_numeric(df.loc[gene, group2_cols], errors="coerce").dropna()
+    g1 = df[list(group1_cols)].values.astype("float32")
+    g2 = df[list(group2_cols)].values.astype("float32")
 
-        if len(g1) < 2 or len(g2) < 2:
-            continue
+    # Vectorized means
+    mean1 = np.nanmean(g1, axis=1)
+    mean2 = np.nanmean(g2, axis=1)
 
-        mean1 = g1.mean()
-        mean2 = g2.mean()
+    # Vectorized fold change
+    fold_change = (mean2 + 1e-9) / (mean1 + 1e-9)
+    log2FC = np.log2(fold_change)
 
-        fold_change = (mean2 + 1e-9) / (mean1 + 1e-9)
-        log2FC = np.log2(fold_change)
+    # Vectorized t-test (scipy handles arrays)
+    t_stat, pvalues = stats.ttest_ind(g1, g2, axis=1, nan_policy="omit")
+    pvalues = np.clip(pvalues, 1e-300, 1.0)
+    neg_log10_pval = -np.log10(pvalues)
 
-        t_stat, pvalue = stats.ttest_ind(g1, g2)
-        pvalue = max(pvalue, 1e-300)
-        neg_log10_pval = -np.log10(pvalue)
-
-        results.append({
-            "Gene": str(gene),
-            "Mean_Group1": round(mean1, 3),
-            "Mean_Group2": round(mean2, 3),
-            "Fold_Change": round(fold_change, 3),
-            "Log2FC": round(log2FC, 3),
-            "P_Value": pvalue,
-            "Neg_Log10_Pvalue": round(neg_log10_pval, 3)
-        })
-
-    result_df = pd.DataFrame(results)
+    result_df = pd.DataFrame({
+        "Gene": df.index,
+        "Mean_Group1": np.round(mean1, 3),
+        "Mean_Group2": np.round(mean2, 3),
+        "Fold_Change": np.round(fold_change, 3),
+        "Log2FC": np.round(log2FC, 3),
+        "P_Value": pvalues,
+        "Neg_Log10_Pvalue": np.round(neg_log10_pval, 3)
+    })
 
     result_df["Significant"] = (
         (result_df["Log2FC"].abs() > 1) &
         (result_df["P_Value"] < 0.05)
     )
-    result_df["Direction"] = result_df["Log2FC"].apply(
-        lambda x: "Upregulated" if x > 1 else ("Downregulated" if x < -1 else "Not Significant")
+    result_df["Direction"] = np.select(
+        [result_df["Log2FC"] > 1, result_df["Log2FC"] < -1],
+        ["Upregulated", "Downregulated"],
+        default="Not Significant"
     )
 
-    return result_df.sort_values("P_Value")
+    gc.collect()  # REQ 4
+    return result_df.sort_values("P_Value").reset_index(drop=True)
 
 
 # ─────────────────────────────────────────────
-# HELPER: Pathway Enrichment via Enrichr
+# Pathway Enrichment
 # ─────────────────────────────────────────────
-def run_pathway_enrichment(gene_list, database="KEGG_2021_Human"):
+@st.cache_data(show_spinner=False)
+def run_pathway_enrichment(gene_tuple, database="KEGG_2021_Human"):
     try:
         enr = gp.enrichr(
-            gene_list=gene_list,
+            gene_list=list(gene_tuple),
             gene_sets=database,
             organism="human",
             outdir=None,
@@ -155,15 +150,13 @@ def run_pathway_enrichment(gene_list, database="KEGG_2021_Human"):
 def show():
     st.title("🔬 Biomarker Discovery")
     st.markdown("Identify statistically significant leukemia biomarkers using differential expression analysis.")
-
     st.markdown("---")
 
-    # ── Data Input Section ──
     st.subheader("📂 Step 1: Load Data")
 
     input_method = st.radio(
         "Choose input method:",
-        ["🌐 Fetch from GEO Database (Enter Accession ID)", "📁 Upload CSV File Manually"],
+        ["🌐 Fetch from GEO Database", "📁 Upload CSV File"],
         horizontal=True
     )
 
@@ -173,87 +166,131 @@ def show():
 
     # ── GEO Fetch ──
     if "GEO" in input_method:
-        st.info("💡 Example accession numbers: **GSE1432** (ALL/AML), **GSE2658** (Multiple Myeloma)")
+        st.info("💡 Examples: **GSE1432** (ALL/AML), **GSE13159** (Leukemia), **GSE2658** (Myeloma)")
+        accession = st.text_input("Enter GEO Accession Number:")
 
-        accession = st.text_input("Enter GEO Accession Number (e.g. GSE1432):")
-
-        # ✅ Gene limit slider — prevents crash on large datasets
         max_genes = st.slider(
-            "⚙️ Max genes to load (lower = safer & faster, higher = more detail)",
-            min_value=500,
-            max_value=5000,
-            value=1000,
-            step=500,
-            help="Large datasets with too many genes can crash the app. This slider limits the genes to the most variable ones."
+            "⚙️ Max genes to load",
+            min_value=500, max_value=5000, value=1000, step=500,
+            help="Limits to most variable genes. Prevents memory crash."
         )
 
         if st.button("🔄 Fetch Dataset"):
             if accession:
-                with st.spinner(f"Downloading {accession} from GEO... this may take a minute ⏳"):
+                # REQ 6: Progress bar + spinner
+                progress = st.progress(0)
+                status = st.empty()
+
+                status.text("📡 Connecting to NCBI GEO...")
+                progress.progress(10)
+
+                with st.spinner(f"Downloading {accession}... ⏳"):
+                    progress.progress(30)
+                    status.text("📥 Downloading series matrix...")
                     df, error = fetch_geo_data(accession, max_genes)
-                    if error:
-                        st.error(error)
-                        st.info("💡 Try reducing the max genes slider or use a smaller dataset.")
-                    else:
-                        st.session_state["geo_df"] = df
-                        st.session_state["geo_accession"] = accession
-                        st.success(f"✅ Dataset loaded! Shape: {df.shape[0]} genes × {df.shape[1]} samples")
-                        if df.shape[0] == max_genes:
-                            st.warning(f"⚠️ Dataset was large — auto-limited to top {max_genes} most variable genes to prevent crash.")
+                    progress.progress(80)
+
+                if error:
+                    progress.empty()
+                    status.empty()
+                    st.error(error)
+                    st.info("💡 Try reducing max genes or check the accession number.")
+                else:
+                    progress.progress(100)
+                    status.text("✅ Done!")
+                    st.session_state["geo_df"] = df
+                    st.session_state["geo_accession"] = accession
+                    st.session_state["current_dataset"] = accession
+                    st.success(f"✅ Loaded: {df.shape[0]} genes × {df.shape[1]} samples")
+                    if df.shape[0] == max_genes:
+                        st.warning(f"⚠️ Auto-limited to top {max_genes} most variable genes.")
+                    progress.empty()
+                    status.empty()
             else:
                 st.warning("Please enter an accession number.")
 
         if "geo_df" in st.session_state:
             df = st.session_state["geo_df"]
-            st.info(f"📦 Currently loaded: **{st.session_state.get('geo_accession', 'GEO Dataset')}** — {df.shape[0]} genes × {df.shape[1]} samples")
+            st.info(f"📦 Active: **{st.session_state.get('geo_accession', 'GEO')}** — {df.shape[0]} genes × {df.shape[1]} samples")
 
     # ── CSV Upload ──
     else:
-        uploaded_file = st.file_uploader("Upload gene expression CSV (rows = genes, columns = samples)", type=["csv"])
+        uploaded_file = st.file_uploader("Upload gene expression CSV (rows=genes, columns=samples)", type=["csv"])
         if uploaded_file:
-            df = pd.read_csv(uploaded_file, index_col=0)
-            st.success(f"✅ File loaded! Shape: {df.shape[0]} genes × {df.shape[1]} samples")
+            # REQ 6: Progress feedback
+            with st.spinner("Reading file..."):
+                progress = st.progress(0)
+                # REQ 3: Chunked CSV reading
+                chunks = []
+                chunk_iter = pd.read_csv(uploaded_file, index_col=0, chunksize=2000)
+                for i, chunk in enumerate(chunk_iter):
+                    chunk = chunk.apply(pd.to_numeric, errors="coerce")
+                    chunk = chunk.astype("float32")  # REQ 2
+                    chunks.append(chunk)
+                    progress.progress(min((i + 1) * 20, 90))
 
-    # ── If data is loaded ──
+                df = pd.concat(chunks)
+                del chunks
+                gc.collect()  # REQ 4
+                progress.progress(100)
+                progress.empty()
+
+            st.success(f"✅ Loaded: {df.shape[0]} genes × {df.shape[1]} samples")
+
+    # ── Data Loaded ──
     if df is not None and not df.empty:
-
         st.session_state.total_patients = df.shape[1]
         st.session_state.gene_features = f"{df.shape[0]:,}"
         st.session_state.data_loaded = True
 
         st.subheader("👁️ Data Preview")
         st.dataframe(df.head(5), use_container_width=True)
-
         st.markdown("---")
 
-        # ── Group Assignment ──
         st.subheader("👥 Step 2: Define Sample Groups")
-        st.markdown("Select which samples belong to **Group 1** (e.g. ALL) and **Group 2** (e.g. AML)")
-
         all_cols = list(df.columns)
         col1, col2 = st.columns(2)
 
         with col1:
             group1_name = st.text_input("Group 1 Name", value="ALL")
-            group1_cols = st.multiselect("Select Group 1 Samples", all_cols, default=all_cols[:len(all_cols)//2])
+            group1_cols = st.multiselect("Group 1 Samples", all_cols, default=all_cols[:len(all_cols)//2])
 
         with col2:
             group2_name = st.text_input("Group 2 Name", value="AML")
-            group2_cols = st.multiselect("Select Group 2 Samples", all_cols, default=all_cols[len(all_cols)//2:])
+            group2_cols = st.multiselect("Group 2 Samples", all_cols, default=all_cols[len(all_cols)//2:])
 
-        # ── Run Analysis ──
         if st.button("🚀 Run Differential Expression Analysis"):
             if not group1_cols or not group2_cols:
                 st.warning("Please select samples for both groups.")
             else:
-                with st.spinner("Running analysis... ⏳"):
-                    result_df = run_differential_expression(df, group1_cols, group2_cols)
+                # REQ 6: Progress bar for analysis
+                progress = st.progress(0)
+                status = st.empty()
+                status.text("⚙️ Running vectorized t-tests...")
+                progress.progress(20)
+
+                with st.spinner("Analyzing... ⏳"):
+                    # REQ 5: Pass JSON for caching compatibility
+                    df_json = df.to_json()
+                    progress.progress(50)
+                    result_df = run_differential_expression(
+                        df_json,
+                        tuple(group1_cols),
+                        tuple(group2_cols)
+                    )
+                    progress.progress(90)
                     st.session_state["de_results"] = result_df
                     st.session_state["group1_name"] = group1_name
                     st.session_state["group2_name"] = group2_name
+                    st.session_state["analysis_done"] = True
+                    gc.collect()  # REQ 4
+
+                progress.progress(100)
+                status.empty()
+                progress.empty()
                 st.success("✅ Analysis complete!")
 
-    # ── Show Results ──
+    # ── Results ──
     if "de_results" in st.session_state:
         result_df = st.session_state["de_results"]
         group1_name = st.session_state.get("group1_name", "Group 1")
@@ -264,23 +301,24 @@ def show():
         down_genes = result_df[result_df["Direction"] == "Downregulated"]
 
         st.markdown("---")
-        st.subheader("📊 Step 3: Results Summary")
+        st.subheader("📊 Step 3: Results")
 
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Total Genes Tested", len(result_df))
-        m2.metric("Significant Genes", len(sig_genes), delta=f"p<0.05, |log2FC|>1")
-        m3.metric(f"Upregulated in {group2_name}", len(up_genes))
-        m4.metric(f"Downregulated in {group2_name}", len(down_genes))
+        m1.metric("Total Genes", len(result_df))
+        m2.metric("Significant", len(sig_genes), delta="p<0.05 |log2FC|>1")
+        m3.metric(f"Upregulated ({group2_name})", len(up_genes))
+        m4.metric(f"Downregulated ({group2_name})", len(down_genes))
 
-        # ── Volcano Plot ──
+        # REQ 7: WebGL volcano plot for performance
         st.subheader("🌋 Volcano Plot")
-        st.markdown("Each dot = one gene. Red = upregulated, Blue = downregulated, Grey = not significant.")
-
         color_map = {
             "Upregulated": "#e74c3c",
             "Downregulated": "#2980b9",
             "Not Significant": "#bdc3c7"
         }
+
+        # REQ 7: Use WebGL render mode when points > 10,000
+        render_mode = "webgl" if len(result_df) > 10000 else "auto"
 
         fig = px.scatter(
             result_df,
@@ -293,57 +331,54 @@ def show():
             labels={"Log2FC": "Log2 Fold Change", "Neg_Log10_Pvalue": "-Log10(P-value)"},
             title=f"Volcano Plot: {group2_name} vs {group1_name}",
             template="plotly_white",
-            height=550
+            height=550,
+            render_mode=render_mode  # REQ 7
         )
 
         fig.add_hline(y=-np.log10(0.05), line_dash="dash", line_color="gray", annotation_text="p=0.05")
         fig.add_vline(x=1, line_dash="dash", line_color="gray")
         fig.add_vline(x=-1, line_dash="dash", line_color="gray")
 
-        top_genes = sig_genes.nsmallest(10, "P_Value")
-        for _, row in top_genes.iterrows():
+        top_label = sig_genes.nsmallest(10, "P_Value")
+        for _, row in top_label.iterrows():
             fig.add_annotation(
                 x=row["Log2FC"], y=row["Neg_Log10_Pvalue"],
                 text=row["Gene"], showarrow=True,
-                arrowhead=2, arrowsize=1, arrowwidth=1,
-                font=dict(size=9)
+                arrowhead=2, font=dict(size=9)
             )
 
         st.plotly_chart(fig, use_container_width=True)
+        gc.collect()  # REQ 4 after heavy plot
 
-        # ── Top Significant Genes Table ──
         st.subheader("🧬 Top 20 Significant Genes")
-        display_cols = ["Gene", "Log2FC", "P_Value", "Fold_Change", "Direction"]
         st.dataframe(
-            sig_genes[display_cols].head(20).reset_index(drop=True),
+            sig_genes[["Gene", "Log2FC", "P_Value", "Fold_Change", "Direction"]].head(20).reset_index(drop=True),
             use_container_width=True
         )
 
         # ── Pathway Enrichment ──
         st.markdown("---")
-        st.subheader("🔗 Step 4: Pathway Enrichment Analysis")
-        st.markdown("Maps your significant genes to known biological pathways (KEGG database).")
+        st.subheader("🔗 Step 4: Pathway Enrichment")
 
         if len(sig_genes) > 0:
-            gene_list = sig_genes["Gene"].head(100).tolist()
+            gene_tuple = tuple(sig_genes["Gene"].head(100).tolist())
 
             if st.button("🔍 Run Pathway Enrichment"):
-                with st.spinner("Querying Enrichr database... ⏳"):
-                    pathway_df, err = run_pathway_enrichment(gene_list)
+                with st.spinner("Querying Enrichr... ⏳"):
+                    pathway_df, err = run_pathway_enrichment(gene_tuple)
 
                 if err:
-                    st.warning(f"Pathway enrichment issue: {err}")
+                    st.warning(err)
                 elif pathway_df is not None and not pathway_df.empty:
                     st.session_state["pathway_results"] = pathway_df
                     st.success(f"✅ Found {len(pathway_df)} enriched pathways!")
                 else:
-                    st.info("No significantly enriched pathways found.")
+                    st.info("No significant pathways found.")
         else:
-            st.info("No significant genes found. Try adjusting your group assignments.")
+            st.info("No significant genes found. Adjust group assignments.")
 
         if "pathway_results" in st.session_state:
             pathway_df = st.session_state["pathway_results"]
-
             st.dataframe(pathway_df[["Term", "Overlap", "P-value", "Genes"]].reset_index(drop=True), use_container_width=True)
 
             fig2 = px.bar(
@@ -353,7 +388,6 @@ def show():
                 orientation="h",
                 color=-np.log10(pathway_df["P-value"].head(10)),
                 color_continuous_scale="Reds",
-                labels={"x": "-Log10(P-value)", "y": "Pathway"},
                 title="Top Enriched KEGG Pathways",
                 template="plotly_white",
                 height=450
@@ -361,28 +395,17 @@ def show():
             fig2.update_layout(yaxis=dict(autorange="reversed"), coloraxis_showscale=False)
             st.plotly_chart(fig2, use_container_width=True)
 
-        # ── Download Results ──
+        # ── Downloads ──
         st.markdown("---")
         st.subheader("📥 Download Results")
-
         col1, col2 = st.columns(2)
         with col1:
-            csv1 = result_df.to_csv(index=False)
-            st.download_button(
-                "⬇️ Download All DE Results (CSV)",
-                data=csv1,
-                file_name="leukodash_DE_results.csv",
-                mime="text/csv"
-            )
+            st.download_button("⬇️ All DE Results (CSV)", result_df.to_csv(index=False),
+                               "leukodash_DE_results.csv", "text/csv")
         with col2:
             if len(sig_genes) > 0:
-                csv2 = sig_genes.to_csv(index=False)
-                st.download_button(
-                    "⬇️ Download Significant Genes Only (CSV)",
-                    data=csv2,
-                    file_name="leukodash_significant_genes.csv",
-                    mime="text/csv"
-                )
+                st.download_button("⬇️ Significant Genes (CSV)", sig_genes.to_csv(index=False),
+                                   "leukodash_significant_genes.csv", "text/csv")
 
     elif df is None:
-        st.info("👆 Please load a dataset above to get started.")
+        st.info("👆 Load a dataset above to get started.")

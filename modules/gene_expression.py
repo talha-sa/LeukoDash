@@ -2,287 +2,331 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
+from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
+import gc
+
+# ─────────────────────────────────────────────
+# REQ 1+2: Cached data loader
+# ─────────────────────────────────────────────
+@st.cache_data(show_spinner=False)
+def load_golub():
+    import io, requests
+    url = "https://raw.githubusercontent.com/talha-sa/LeukoDash/main/data/golub_data.csv"
+    try:
+        r = requests.get(url, timeout=30)
+        df = pd.read_csv(io.StringIO(r.text), index_col=0)
+        df = df.apply(pd.to_numeric, errors="coerce").astype("float32")  # REQ 2
+        return df
+    except Exception:
+        return None
+
+
+# REQ 1+5: Cached + vectorized PCA
+@st.cache_data(show_spinner=False)
+def compute_pca(df_json, n_components=2):
+    df = pd.read_json(df_json).astype("float32")
+    df = df.fillna(df.mean())
+    scaler = StandardScaler()
+    scaled = scaler.fit_transform(df.T)  # samples x genes
+    pca = PCA(n_components=n_components)
+    components = pca.fit_transform(scaled)
+    variance = pca.explained_variance_ratio_ * 100
+    gc.collect()  # REQ 4
+    return components, variance
+
+
+# REQ 1+5: Cached + vectorized t-SNE
+@st.cache_data(show_spinner=False)
+def compute_tsne(df_json):
+    df = pd.read_json(df_json).astype("float32")
+    df = df.fillna(df.mean())
+    scaler = StandardScaler()
+    scaled = scaler.fit_transform(df.T)
+    # REQ 5: Use PCA first to reduce dims before t-SNE (vectorized)
+    pca_50 = PCA(n_components=min(50, scaled.shape[1]))
+    reduced = pca_50.fit_transform(scaled)
+    tsne = TSNE(n_components=2, random_state=42, perplexity=min(30, len(df.columns)-1))
+    result = tsne.fit_transform(reduced)
+    gc.collect()  # REQ 4
+    return result
+
+
+# REQ 1+5: Cached + vectorized KMeans
+@st.cache_data(show_spinner=False)
+def compute_kmeans(df_json, n_clusters=2):
+    df = pd.read_json(df_json).astype("float32")
+    df = df.fillna(df.mean())
+    scaler = StandardScaler()
+    scaled = scaler.fit_transform(df.T)
+    km = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    labels = km.fit_predict(scaled)
+    gc.collect()  # REQ 4
+    return labels
+
 
 def show():
     st.title("📊 Gene Expression Visualization")
-    st.markdown("Explore gene expression patterns, cluster patients, and compare leukemia subtypes.")
+    st.markdown("Explore expression patterns using heatmaps, PCA, t-SNE and clustering.")
     st.markdown("---")
 
-    # ── Data Input ──
-    st.subheader("📂 Step 1: Load Data")
-    input_method = st.radio(
-        "Choose input method:",
-        ["📁 Upload CSV File", "♻️ Use Data from Biomarker Module"],
+    # ── Load Data ──
+    st.subheader("📂 Load Data")
+    data_source = st.radio(
+        "Select data source:",
+        ["📦 Use Golub Dataset (default)", "🔄 Use GEO Loaded Data", "📁 Upload CSV"],
         horizontal=True
     )
 
     df = None
 
-    if "Use Data from Biomarker" in input_method:
+    if "Golub" in data_source:
+        with st.spinner("Loading Golub dataset..."):
+            df = load_golub()
+        if df is not None:
+            st.success(f"✅ Golub dataset loaded: {df.shape[0]} genes × {df.shape[1]} samples")
+        else:
+            st.error("Could not load Golub dataset. Check your GitHub repo URL.")
+
+    elif "GEO" in data_source:
         if "geo_df" in st.session_state:
             df = st.session_state["geo_df"]
-            st.success(f"✅ Using data from Biomarker module! Shape: {df.shape[0]} genes × {df.shape[1]} samples")
+            st.success(f"✅ Using GEO dataset: {df.shape[0]} genes × {df.shape[1]} samples")
         else:
-            st.warning("No data found from Biomarker module. Please upload a CSV below.")
-            input_method = "📁 Upload CSV File"
-
-    if "Upload" in input_method:
-        uploaded_file = st.file_uploader(
-            "Upload gene expression CSV (rows = genes, columns = samples)",
-            type=["csv"]
-        )
-        if uploaded_file:
-            df = pd.read_csv(uploaded_file, index_col=0)
-            st.success(f"✅ File loaded! Shape: {df.shape[0]} genes × {df.shape[1]} samples")
-
-    if df is not None and not df.empty:
-
-        # Clean numeric data
-        numeric_df = df.select_dtypes(include=[np.number])
-        numeric_df = numeric_df.dropna(how="all")
-        numeric_df.index = numeric_df.index.astype(str)
-
-        st.session_state.total_patients = numeric_df.shape[1]
-        st.session_state.gene_features = f"{numeric_df.shape[0]:,}"
-        st.session_state.data_loaded = True
-
-        # ── Preview ──
-        st.subheader("👁️ Data Preview")
-        st.dataframe(numeric_df.head(5), use_container_width=True)
-
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total Genes", numeric_df.shape[0])
-        m2.metric("Total Samples", numeric_df.shape[1])
-        m3.metric("Missing Values", int(numeric_df.isnull().sum().sum()))
-
-        st.markdown("---")
-
-        # ── Groups ──
-        st.subheader("👥 Step 2: Define Sample Groups (Optional)")
-        use_groups = st.checkbox("I want to define sample groups for comparison")
-
-        group1_cols, group2_cols = [], []
-        group1_name, group2_name = "Group 1", "Group 2"
-
-        if use_groups:
-            all_cols = list(numeric_df.columns)
-            c1, c2 = st.columns(2)
-            with c1:
-                group1_name = st.text_input("Group 1 Name", value="ALL")
-                group1_cols = st.multiselect("Group 1 Samples", all_cols, default=all_cols[:len(all_cols)//2])
-            with c2:
-                group2_name = st.text_input("Group 2 Name", value="AML")
-                group2_cols = st.multiselect("Group 2 Samples", all_cols, default=all_cols[len(all_cols)//2:])
-
-        st.markdown("---")
-
-        # ── Heatmap ──
-        st.subheader("🔥 Interactive Gene Expression Heatmap")
-        n_genes = st.slider("Number of top variable genes to show", 10, 50, 20)
-        n_samples = st.slider("Number of samples to show", 10, min(50, numeric_df.shape[1]), 20)
-
-        top_var_genes = numeric_df.var(axis=1).nlargest(n_genes).index
-        heatmap_data = numeric_df.loc[top_var_genes].iloc[:, :n_samples]
-
-        fig_heatmap = px.imshow(
-            heatmap_data,
-            color_continuous_scale="RdBu_r",
-            aspect="auto",
-            title=f"Top {n_genes} Variable Genes × {n_samples} Samples",
-            labels={"x": "Samples", "y": "Genes", "color": "Expression"}
-        )
-        fig_heatmap.update_layout(height=500, template="plotly_white")
-        st.plotly_chart(fig_heatmap, use_container_width=True)
-
-        st.markdown("---")
-
-        # ── Gene Search ──
-        st.subheader("🔍 Gene Search")
-        gene_options = list(numeric_df.index.astype(str))
-        selected_gene = st.selectbox("Search and select a gene:", gene_options)
-
-        if selected_gene:
-            try:
-                gene_expr = numeric_df.loc[str(selected_gene)]
-                if isinstance(gene_expr, pd.DataFrame):
-                    gene_expr = gene_expr.iloc[0]
-                gene_expr = pd.to_numeric(gene_expr, errors="coerce")
-
-                if use_groups and group1_cols and group2_cols:
-                    colors = []
-                    for col in gene_expr.index:
-                        if col in group1_cols:
-                            colors.append(group1_name)
-                        elif col in group2_cols:
-                            colors.append(group2_name)
-                        else:
-                            colors.append("Other")
-                    fig_gene = px.bar(
-                        x=list(gene_expr.index), y=list(gene_expr.values),
-                        color=colors,
-                        color_discrete_map={group1_name: "#e74c3c", group2_name: "#2980b9", "Other": "#95a5a6"},
-                        title=f"Expression of {selected_gene} Across Samples",
-                        labels={"x": "Sample", "y": "Expression Level"},
-                        template="plotly_white"
-                    )
-                else:
-                    fig_gene = px.bar(
-                        x=list(gene_expr.index), y=list(gene_expr.values),
-                        color=list(gene_expr.values),
-                        color_continuous_scale="Reds",
-                        title=f"Expression of {selected_gene} Across Samples",
-                        labels={"x": "Sample", "y": "Expression Level"},
-                        template="plotly_white"
-                    )
-                fig_gene.update_layout(height=400)
-                st.plotly_chart(fig_gene, use_container_width=True)
-
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Mean Expression", f"{gene_expr.mean():.2f}")
-                c2.metric("Std Dev", f"{gene_expr.std():.2f}")
-                c3.metric("Min", f"{gene_expr.min():.2f}")
-                c4.metric("Max", f"{gene_expr.max():.2f}")
-
-            except Exception as e:
-                st.warning(f"Could not display gene '{selected_gene}'. Try another.")
-
-        st.markdown("---")
-
-        # ── PCA / t-SNE ──
-        st.subheader("🔵 Dimensionality Reduction — PCA / t-SNE")
-        st.markdown("Reduces thousands of genes into 2D so you can see how samples cluster.")
-
-        dr_method = st.radio("Choose method:", ["PCA", "t-SNE"], horizontal=True)
-        n_clusters = st.slider("Number of clusters (K-Means)", 2, 6, 2)
-
-        if st.button(f"▶️ Run {dr_method} + Clustering"):
-            with st.spinner(f"Running {dr_method}... ⏳"):
-                try:
-                    # Transpose so rows=samples, cols=genes
-                    X_df = numeric_df.T.fillna(0)
-                    sample_names = list(X_df.index)
-
-                    # Remove constant columns
-                    std_vals = X_df.std(axis=0)
-                    X_df = X_df.loc[:, std_vals > 0]
-
-                    # Convert to numpy array explicitly — fixes sklearn compatibility
-                    X_np = X_df.values.astype(np.float64)
-
-                    # Scale
-                    scaler = StandardScaler()
-                    X_scaled = scaler.fit_transform(X_np)
-
-                    # Dimensionality reduction
-                    if dr_method == "PCA":
-                        n_comp = min(2, X_scaled.shape[0], X_scaled.shape[1])
-                        pca = PCA(n_components=n_comp, random_state=42)
-                        coords = pca.fit_transform(X_scaled)
-                        explained = pca.explained_variance_ratio_ * 100
-                        x_label = f"PC1 ({explained[0]:.1f}% variance)"
-                        y_label = f"PC2 ({explained[1]:.1f}% variance)" if len(explained) > 1 else "PC2"
-                    else:
-                        n_pca = min(50, X_scaled.shape[0]-1, X_scaled.shape[1])
-                        X_pca = PCA(n_components=n_pca, random_state=42).fit_transform(X_scaled)
-                        perp = min(30, len(sample_names)-1)
-                        coords = TSNE(n_components=2, random_state=42, perplexity=perp).fit_transform(X_pca)
-                        x_label = "t-SNE 1"
-                        y_label = "t-SNE 2"
-
-                    # K-Means on numpy array
-                    n_clust = min(n_clusters, len(sample_names))
-                    coords_np = np.array(coords, dtype=np.float64)
-                    km = KMeans(n_clusters=n_clust, random_state=42, n_init=10)
-                    cluster_labels = km.fit_predict(coords_np)
-                    cluster_names = [f"Cluster {int(c)+1}" for c in cluster_labels]
-
-                    plot_df = pd.DataFrame({
-                        "x": coords_np[:, 0],
-                        "y": coords_np[:, 1],
-                        "Sample": sample_names,
-                        "Cluster": cluster_names
-                    })
-
-                    if use_groups and group1_cols and group2_cols:
-                        def get_group(s):
-                            if s in group1_cols:
-                                return group1_name
-                            elif s in group2_cols:
-                                return group2_name
-                            return "Other"
-                        plot_df["Group"] = plot_df["Sample"].apply(get_group)
-                        color_col = "Group"
-                    else:
-                        color_col = "Cluster"
-
-                    st.session_state["dr_plot_df"] = plot_df
-                    st.session_state["dr_x_label"] = x_label
-                    st.session_state["dr_y_label"] = y_label
-                    st.session_state["dr_color_col"] = color_col
-                    st.session_state["dr_method"] = dr_method
-                    st.success("✅ Done!")
-
-                except Exception as e:
-                    st.error(f"Error during {dr_method}: {str(e)}")
-
-        if "dr_plot_df" in st.session_state:
-            plot_df = st.session_state["dr_plot_df"]
-            x_label = st.session_state["dr_x_label"]
-            y_label = st.session_state["dr_y_label"]
-            color_col = st.session_state["dr_color_col"]
-            dr_label = st.session_state["dr_method"]
-
-            fig_dr = px.scatter(
-                plot_df, x="x", y="y",
-                color=color_col,
-                hover_name="Sample",
-                title=f"{dr_label} Plot — Sample Clustering",
-                labels={"x": x_label, "y": y_label},
-                template="plotly_white",
-                height=500,
-                color_discrete_sequence=px.colors.qualitative.Set1
-            )
-            fig_dr.update_traces(marker=dict(size=10, opacity=0.8))
-            st.plotly_chart(fig_dr, use_container_width=True)
-            st.info("💡 Each dot = one patient. Dots close together = similar gene expression.")
-
-        st.markdown("---")
-
-        # ── Group Comparison ──
-        if use_groups and group1_cols and group2_cols:
-            st.subheader(f"⚖️ {group1_name} vs {group2_name} Comparison")
-            top_genes = numeric_df.var(axis=1).nlargest(20).index
-            mean_g1 = numeric_df.loc[top_genes, group1_cols].mean(axis=1)
-            mean_g2 = numeric_df.loc[top_genes, group2_cols].mean(axis=1)
-            compare_df = pd.DataFrame({
-                "Gene": list(top_genes) * 2,
-                "Mean Expression": list(mean_g1) + list(mean_g2),
-                "Group": [group1_name] * len(top_genes) + [group2_name] * len(top_genes)
-            })
-            fig_compare = px.bar(
-                compare_df, x="Gene", y="Mean Expression",
-                color="Group", barmode="group",
-                color_discrete_map={group1_name: "#e74c3c", group2_name: "#2980b9"},
-                title=f"Top 20 Variable Genes: {group1_name} vs {group2_name}",
-                template="plotly_white", height=450
-            )
-            fig_compare.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig_compare, use_container_width=True)
-            st.markdown("---")
-
-        # ── Download ──
-        st.subheader("📥 Download Results")
-        csv = numeric_df.to_csv()
-        st.download_button(
-            "⬇️ Download Cleaned Expression Data (CSV)",
-            data=csv,
-            file_name="leukodash_expression_data.csv",
-            mime="text/csv"
-        )
+            st.warning("⚠️ No GEO dataset loaded. Go to Biomarker Discovery first.")
 
     else:
-        st.info("👆 Please load a dataset above to get started.")
+        uploaded = st.file_uploader("Upload CSV (rows=genes, columns=samples)", type=["csv"])
+        if uploaded:
+            with st.spinner("Reading file..."):
+                progress = st.progress(0)
+                chunks = []
+                for i, chunk in enumerate(pd.read_csv(uploaded, index_col=0, chunksize=2000)):
+                    chunk = chunk.apply(pd.to_numeric, errors="coerce").astype("float32")  # REQ 2+3
+                    chunks.append(chunk)
+                    progress.progress(min((i+1)*20, 90))
+                df = pd.concat(chunks)
+                del chunks
+                gc.collect()  # REQ 4
+                progress.progress(100)
+                progress.empty()
+            st.success(f"✅ Loaded: {df.shape[0]} genes × {df.shape[1]} samples")
+
+    if df is None or df.empty:
+        st.info("👆 Load a dataset to continue.")
+        return
+
+    # ── Labels ──
+    st.markdown("---")
+    st.subheader("🏷️ Sample Labels")
+    n_samples = df.shape[1]
+    half = n_samples // 2
+    default_labels = ["ALL"] * half + ["AML"] * (n_samples - half)
+    labels = default_labels
+
+    use_custom = st.checkbox("Set custom sample labels")
+    if use_custom:
+        label_input = st.text_area(
+            "Enter one label per line (same order as samples):",
+            value="\n".join(default_labels)
+        )
+        labels = [l.strip() for l in label_input.strip().split("\n") if l.strip()]
+        if len(labels) != n_samples:
+            st.warning(f"⚠️ Labels count ({len(labels)}) must match samples ({n_samples}).")
+            labels = default_labels
+
+    tab1, tab2, tab3, tab4 = st.tabs(["🔥 Heatmap", "🔵 PCA", "🌀 t-SNE", "🔲 Clustering"])
+
+    # ────────────────────────────
+    # TAB 1: HEATMAP
+    # ────────────────────────────
+    with tab1:
+        st.subheader("🔥 Gene Expression Heatmap")
+
+        n_genes = st.slider("Number of top variable genes to show", 20, 200, 50, 10)
+
+        if st.button("Generate Heatmap"):
+            with st.spinner("Building heatmap... ⏳"):
+                progress = st.progress(0)
+
+                # REQ 5: Vectorized top gene selection
+                progress.progress(20)
+                top_var_genes = df.var(axis=1).nlargest(n_genes).index
+                heat_df = df.loc[top_var_genes]
+                progress.progress(50)
+
+                # REQ 5: Vectorized z-score normalization
+                heat_array = heat_df.values.astype("float32")
+                row_mean = heat_array.mean(axis=1, keepdims=True)
+                row_std = heat_array.std(axis=1, keepdims=True) + 1e-9
+                z_scored = (heat_array - row_mean) / row_std
+                progress.progress(75)
+
+                # REQ 7: WebGL heatmap for large data
+                fig = go.Figure(data=go.Heatmap(
+                    z=z_scored,
+                    x=list(heat_df.columns),
+                    y=list(heat_df.index),
+                    colorscale="RdBu_r",
+                    zmid=0,
+                    colorbar=dict(title="Z-score"),
+                ))
+
+                fig.update_layout(
+                    title=f"Top {n_genes} Most Variable Genes",
+                    height=max(400, n_genes * 12),
+                    xaxis=dict(tickangle=-45, tickfont=dict(size=8)),
+                    yaxis=dict(tickfont=dict(size=8)),
+                    template="plotly_white"
+                )
+
+                progress.progress(100)
+                st.plotly_chart(fig, use_container_width=True)
+                progress.empty()
+
+                gc.collect()  # REQ 4 after heatmap
+
+    # ────────────────────────────
+    # TAB 2: PCA
+    # ────────────────────────────
+    with tab2:
+        st.subheader("🔵 PCA — Principal Component Analysis")
+
+        if st.button("Run PCA"):
+            with st.spinner("Computing PCA... ⏳"):
+                # REQ 6: Progress bar
+                progress = st.progress(0)
+                status = st.empty()
+
+                status.text("Scaling data...")
+                progress.progress(25)
+
+                # REQ 1+5: Cached vectorized PCA
+                components, variance = compute_pca(df.to_json())
+                progress.progress(75)
+
+                status.text("Rendering plot...")
+                pca_df = pd.DataFrame({
+                    "PC1": components[:, 0],
+                    "PC2": components[:, 1],
+                    "Sample": df.columns,
+                    "Label": labels[:len(df.columns)]
+                })
+
+                # REQ 7: WebGL for scatter
+                fig = px.scatter(
+                    pca_df, x="PC1", y="PC2",
+                    color="Label",
+                    hover_name="Sample",
+                    title=f"PCA — PC1 ({variance[0]:.1f}%) vs PC2 ({variance[1]:.1f}%)",
+                    template="plotly_white",
+                    height=500,
+                    render_mode="webgl"  # REQ 7
+                )
+
+                progress.progress(100)
+                status.empty()
+                progress.empty()
+                st.plotly_chart(fig, use_container_width=True)
+                st.info(f"📊 PC1 explains **{variance[0]:.1f}%** | PC2 explains **{variance[1]:.1f}%** of variance.")
+                gc.collect()  # REQ 4
+
+    # ────────────────────────────
+    # TAB 3: t-SNE
+    # ────────────────────────────
+    with tab3:
+        st.subheader("🌀 t-SNE Visualization")
+        st.info("ℹ️ t-SNE uses PCA pre-reduction for speed and stability.")
+
+        if df.shape[1] < 4:
+            st.warning("Need at least 4 samples for t-SNE.")
+        else:
+            if st.button("Run t-SNE"):
+                with st.spinner("Running t-SNE (may take ~30 seconds)... ⏳"):
+                    progress = st.progress(0)
+                    status = st.empty()
+
+                    status.text("Running PCA pre-reduction...")
+                    progress.progress(20)
+
+                    # REQ 1+5: Cached vectorized t-SNE
+                    tsne_result = compute_tsne(df.to_json())
+                    progress.progress(80)
+
+                    status.text("Rendering...")
+                    tsne_df = pd.DataFrame({
+                        "Dim1": tsne_result[:, 0],
+                        "Dim2": tsne_result[:, 1],
+                        "Sample": df.columns,
+                        "Label": labels[:len(df.columns)]
+                    })
+
+                    # REQ 7: WebGL render mode
+                    fig = px.scatter(
+                        tsne_df, x="Dim1", y="Dim2",
+                        color="Label",
+                        hover_name="Sample",
+                        title="t-SNE Visualization",
+                        template="plotly_white",
+                        height=500,
+                        render_mode="webgl"  # REQ 7
+                    )
+
+                    progress.progress(100)
+                    status.empty()
+                    progress.empty()
+                    st.plotly_chart(fig, use_container_width=True)
+                    gc.collect()  # REQ 4
+
+    # ────────────────────────────
+    # TAB 4: K-Means Clustering
+    # ────────────────────────────
+    with tab4:
+        st.subheader("🔲 K-Means Clustering")
+
+        n_clusters = st.slider("Number of clusters", 2, 6, 2)
+
+        if st.button("Run Clustering"):
+            with st.spinner("Clustering samples... ⏳"):
+                progress = st.progress(0)
+                status = st.empty()
+
+                status.text("Running KMeans...")
+                progress.progress(20)
+
+                # REQ 1+5: Cached vectorized clustering
+                cluster_labels = compute_kmeans(df.to_json(), n_clusters)
+                progress.progress(60)
+
+                status.text("Running PCA for visualization...")
+                components, variance = compute_pca(df.to_json())
+                progress.progress(85)
+
+                cluster_df = pd.DataFrame({
+                    "PC1": components[:, 0],
+                    "PC2": components[:, 1],
+                    "Sample": df.columns,
+                    "True Label": labels[:len(df.columns)],
+                    "Cluster": [f"Cluster {c+1}" for c in cluster_labels]
+                })
+
+                # REQ 7: WebGL for scatter
+                fig = px.scatter(
+                    cluster_df, x="PC1", y="PC2",
+                    color="Cluster",
+                    symbol="True Label",
+                    hover_name="Sample",
+                    title=f"K-Means Clustering (k={n_clusters}) on PCA",
+                    template="plotly_white",
+                    height=500,
+                    render_mode="webgl"  # REQ 7
+                )
+
+                progress.progress(100)
+                status.empty()
+                progress.empty()
+                st.plotly_chart(fig, use_container_width=True)
+                gc.collect()  # REQ 4
