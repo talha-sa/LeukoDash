@@ -18,7 +18,6 @@ def fetch_geo_data(accession, max_genes=1000, max_samples=None):
     try:
         accession = accession.strip().upper()
 
-        # Validate format first
         if not accession.startswith("GSE") or not accession[3:].isdigit():
             return None, "❌ Invalid accession format. Use format: GSE followed by numbers (e.g. GSE1432)"
 
@@ -26,7 +25,6 @@ def fetch_geo_data(accession, max_genes=1000, max_samples=None):
 
         response = requests.get(url, timeout=60, stream=True)
 
-        # FIX 1: Clean specific error messages
         if response.status_code == 404:
             return None, "❌ Accession not found. This dataset may not exist or may be restricted/private. Please check your ID."
         elif response.status_code == 403:
@@ -90,7 +88,6 @@ def fetch_geo_data(accession, max_genes=1000, max_samples=None):
 # FIX 4: Zero variance gene filter
 # ─────────────────────────────────────────────
 def drop_zero_variance_genes(df):
-    """Removes genes where all samples have identical values (dead genes)."""
     variances = df.var(axis=1)
     zero_var_count = (variances == 0).sum()
     if zero_var_count > 0:
@@ -103,20 +100,14 @@ def drop_zero_variance_genes(df):
 # FIX 3: Missing label handler
 # ─────────────────────────────────────────────
 def clean_labels(labels, df_columns):
-    """Removes samples with missing/empty labels and returns cleaned data."""
     label_series = pd.Series(labels, index=df_columns)
-
-    # Find missing
     missing_mask = label_series.isin(["", "nan", "NaN", "None", "N/A"]) | label_series.isna()
     missing_count = missing_mask.sum()
-
     if missing_count > 0:
         st.warning(f"⚠️ {missing_count} sample(s) removed due to missing classification labels.")
         label_series = label_series[~missing_mask]
-
     valid_cols = label_series.index.tolist()
     valid_labels = label_series.tolist()
-
     return valid_labels, valid_cols, missing_count
 
 
@@ -182,10 +173,9 @@ def run_pathway_enrichment(gene_tuple, database="KEGG_2021_Human"):
 
 
 # ─────────────────────────────────────────────
-# PDF Report Generator
+# Report Generator
 # ─────────────────────────────────────────────
 def generate_report(result_df, accession, group1_name, group2_name):
-    """Generates a downloadable CSV summary report."""
     sig_genes = result_df[result_df["Significant"]]
     up = result_df[result_df["Direction"] == "Upregulated"]
     down = result_df[result_df["Direction"] == "Downregulated"]
@@ -209,7 +199,6 @@ def generate_report(result_df, accession, group1_name, group2_name):
     summary.to_csv(output, index=False)
     output.write("\n\nSIGNIFICANT GENES\n")
     sig_genes.to_csv(output, index=False)
-
     return output.getvalue()
 
 
@@ -220,7 +209,6 @@ def show():
     st.title("🔬 Biomarker Discovery")
     st.markdown("Identify statistically significant leukemia biomarkers using differential expression analysis.")
 
-    # MENTOR FIX: st.expander for documentation
     with st.expander("📖 How to use this module"):
         st.markdown("""
         1. **Load Data** — Fetch from GEO using accession number (e.g. GSE1432) or upload your own CSV
@@ -265,7 +253,6 @@ def show():
             max_genes = st.slider("⚙️ Max genes", 500, 5000, 1000, 500,
                                   help="Limits to most variable genes to prevent crash")
 
-        # FIX 2: Sample subsetting UI
         with st.expander("⚙️ Large Dataset Options"):
             enable_subset = st.checkbox("Enable sample subsetting (recommended for datasets >500 samples)")
             max_samples = None
@@ -275,13 +262,12 @@ def show():
                     min_value=50, max_value=500, value=100, step=50,
                     help="Loads only the first N samples for faster analysis"
                 )
-                st.info(f"ℹ️ Only the first **{max_samples}** samples will be analyzed. Good for quick previews.")
+                st.info(f"ℹ️ Only the first **{max_samples}** samples will be analyzed.")
 
         if st.button("🔄 Fetch Dataset"):
             if not accession:
                 st.warning("⚠️ Please enter an accession number.")
             elif not accession.strip().upper().startswith("GSE"):
-                # FIX 1: Immediate format validation
                 st.error("❌ Invalid format. Accession must start with 'GSE' (e.g. GSE1432). SRP, GPL formats are not supported.")
             else:
                 progress = st.progress(0)
@@ -303,7 +289,6 @@ def show():
                 status.empty()
 
                 if error:
-                    # FIX 1: Clean error display
                     st.error(error)
                     with st.expander("🛠️ Troubleshooting Tips"):
                         st.markdown("""
@@ -317,7 +302,6 @@ def show():
                     st.session_state["geo_accession"] = accession.strip().upper()
                     st.session_state["current_dataset"] = accession.strip().upper()
                     current_accession = accession.strip().upper()
-
                     st.success(f"✅ Loaded: {df.shape[0]} genes × {df.shape[1]} samples")
                     if enable_subset and max_samples:
                         st.info(f"📊 Showing first {max_samples} samples (subset mode active)")
@@ -346,14 +330,11 @@ def show():
                     for i, chunk in enumerate(pd.read_csv(uploaded_file, index_col=0, chunksize=2000)):
                         chunk = chunk.apply(pd.to_numeric, errors="coerce")
                         chunk = chunk.astype("float32")
-                        # FIX 4: Drop zero variance per chunk
                         chunks.append(chunk)
-                        progress.progress(min((i+1)*20, 90))
+                        progress.progress(min((i + 1) * 20, 90))
 
                     df = pd.concat(chunks)
                     del chunks
-
-                    # FIX 4: Drop zero variance genes
                     df = drop_zero_variance_genes(df)
                     gc.collect()
                     progress.progress(100)
@@ -385,13 +366,11 @@ def show():
             group1_name = st.text_input("Group 1 Name", value="ALL")
             group1_cols = st.multiselect("Group 1 Samples", all_cols,
                                          default=all_cols[:len(all_cols)//2])
-
         with col2:
             group2_name = st.text_input("Group 2 Name", value="AML")
             group2_cols = st.multiselect("Group 2 Samples", all_cols,
                                          default=all_cols[len(all_cols)//2:])
 
-        # FIX 3: Show overlap warning
         overlap = set(group1_cols) & set(group2_cols)
         if overlap:
             st.error(f"❌ {len(overlap)} sample(s) assigned to both groups. Remove duplicates before proceeding.")
@@ -434,7 +413,7 @@ def show():
                     except Exception as e:
                         progress.empty()
                         status.empty()
-                        st.error(f"❌ Analysis failed: {str(e)}\n\nTry reducing the dataset size or checking your group assignments.")
+                        st.error(f"❌ Analysis failed: {str(e)}")
 
     # ── Results ──
     if "de_results" in st.session_state:
@@ -455,8 +434,23 @@ def show():
         m3.metric(f"↑ {group2_name}", len(up_genes))
         m4.metric(f"↓ {group2_name}", len(down_genes))
 
-        # Volcano Plot
+        # ─────────────────────────────────────────────
+        # ✅ NEW: Improved Volcano Plot
+        # ─────────────────────────────────────────────
         st.subheader("🌋 Volcano Plot")
+
+        with st.expander("ℹ️ How to read this plot"):
+            st.markdown("""
+            - **Red dots** = Upregulated genes in Group 2
+            - **Blue dots** = Downregulated genes in Group 2
+            - **Grey dots** = Not statistically significant
+            - **Vertical dashed lines** = Log2 Fold Change threshold (±1)
+            - **Horizontal dashed line** = p-value cutoff (p = 0.05)
+            - **Top-right corner** = Significantly upregulated biomarkers
+            - **Top-left corner** = Significantly downregulated biomarkers
+            - **Gene labels** = Probe IDs from Affymetrix microarray (cross-reference via NCBI Gene)
+            """)
+
         color_map = {
             "Upregulated": "#e74c3c",
             "Downregulated": "#2980b9",
@@ -466,7 +460,8 @@ def show():
 
         fig = px.scatter(
             result_df,
-            x="Log2FC", y="Neg_Log10_Pvalue",
+            x="Log2FC",
+            y="Neg_Log10_Pvalue",
             color="Direction",
             color_discrete_map=color_map,
             hover_name="Gene",
@@ -474,20 +469,81 @@ def show():
             labels={"Log2FC": "Log2 Fold Change", "Neg_Log10_Pvalue": "-Log10(P-value)"},
             title=f"Volcano Plot: {group2_name} vs {group1_name}",
             template="plotly_white",
-            height=550,
+            height=580,
             render_mode=render_mode
         )
-        fig.add_hline(y=-np.log10(0.05), line_dash="dash", line_color="gray", annotation_text="p=0.05")
-        fig.add_vline(x=1, line_dash="dash", line_color="gray")
-        fig.add_vline(x=-1, line_dash="dash", line_color="gray")
 
+        # ✅ NEW: Colored threshold lines
+        fig.add_hline(
+            y=-np.log10(0.05),
+            line_dash="dash",
+            line_color="gray",
+            line_width=1.5,
+            annotation_text="p = 0.05",
+            annotation_position="right"
+        )
+        fig.add_vline(x=1, line_dash="dash", line_color="#e74c3c", line_width=1.2)
+        fig.add_vline(x=-1, line_dash="dash", line_color="#2980b9", line_width=1.2)
+
+        # ✅ NEW: Quadrant labels
+        y_max = result_df["Neg_Log10_Pvalue"].max()
+        x_max = result_df["Log2FC"].abs().max()
+
+        fig.add_annotation(
+            x=min(x_max * 0.75, 4),
+            y=y_max * 0.92,
+            text=f"⬆ Upregulated<br>in {group2_name}",
+            showarrow=False,
+            font=dict(size=11, color="#e74c3c"),
+            bgcolor="rgba(231,76,60,0.08)",
+            bordercolor="#e74c3c",
+            borderwidth=1,
+            borderpad=4
+        )
+        fig.add_annotation(
+            x=max(-x_max * 0.75, -4),
+            y=y_max * 0.92,
+            text=f"⬇ Downregulated<br>in {group2_name}",
+            showarrow=False,
+            font=dict(size=11, color="#2980b9"),
+            bgcolor="rgba(41,128,185,0.08)",
+            bordercolor="#2980b9",
+            borderwidth=1,
+            borderpad=4
+        )
+
+        # ✅ NEW: Cleaned probe ID labels
         top_label = sig_genes.nsmallest(10, "P_Value")
         for _, row in top_label.iterrows():
+            gene_name = str(row["Gene"])
+            if "_at" in gene_name or "_s_at" in gene_name or "_x_at" in gene_name:
+                display_name = f"Probe:{gene_name.split('_')[0]}"
+            else:
+                display_name = gene_name
+
             fig.add_annotation(
-                x=row["Log2FC"], y=row["Neg_Log10_Pvalue"],
-                text=row["Gene"], showarrow=True,
-                arrowhead=2, font=dict(size=9)
+                x=row["Log2FC"],
+                y=row["Neg_Log10_Pvalue"],
+                text=display_name,
+                showarrow=True,
+                arrowhead=2,
+                arrowwidth=1.5,
+                arrowcolor="#555",
+                bgcolor="white",
+                bordercolor="#ccc",
+                borderwidth=1,
+                font=dict(size=9, color="#222"),
+                opacity=0.9
             )
+
+        fig.update_layout(
+            legend_title_text="Expression Direction",
+            legend=dict(
+                bgcolor="white",
+                bordercolor="#ddd",
+                borderwidth=1
+            )
+        )
 
         st.plotly_chart(fig, use_container_width=True)
         gc.collect()
@@ -499,9 +555,78 @@ def show():
                 use_container_width=True
             )
 
-        # Pathway Enrichment
+        # ─────────────────────────────────────────────
+        # ✅ NEW: Biological Insight Box
+        # ─────────────────────────────────────────────
         st.markdown("---")
-        st.subheader("🔗 Step 4: Pathway Enrichment")
+        st.subheader("🧠 Biological Interpretation")
+
+        total_sig = len(sig_genes)
+        total_up = len(up_genes)
+        total_down = len(down_genes)
+
+        if total_sig > 0:
+            dominant = "Downregulated" if total_down > total_up else "Upregulated"
+            dominant_count = max(total_down, total_up)
+            dominant_pct = int((dominant_count / total_sig) * 100)
+            dominant_color = "#2980b9" if dominant == "Downregulated" else "#e74c3c"
+            biological_meaning = (
+                f"{group2_name} shows <b>massive suppression</b> of key genetic pathways compared to {group1_name}."
+                if dominant == "Downregulated"
+                else f"{group2_name} shows <b>overactivation</b> of key genetic pathways compared to {group1_name}."
+            )
+
+            st.markdown(f"""
+            <div style='background:white; border-left:5px solid {dominant_color};
+                        padding:20px; border-radius:10px;
+                        box-shadow:0 2px 10px rgba(0,0,0,0.07); margin-top:10px;'>
+                <h4 style='color:{dominant_color}; margin:0 0 12px 0;'>
+                    📌 Key Finding: {dominant} genes dominate ({dominant_pct}% of significant genes)
+                </h4>
+                <p style='color:#444; font-size:15px; margin:0 0 16px 0;'>
+                    {biological_meaning}
+                </p>
+                <table style='width:100%; font-size:14px; border-collapse:collapse;'>
+                    <tr style='border-bottom:1px solid #eee;'>
+                        <td style='padding:6px 0;'><b>Dataset</b></td>
+                        <td style='padding:6px 0;'>{st.session_state.get("geo_accession", "Custom Upload")}</td>
+                        <td style='padding:6px 0;'><b>Comparison</b></td>
+                        <td style='padding:6px 0;'>{group2_name} vs {group1_name}</td>
+                    </tr>
+                    <tr style='border-bottom:1px solid #eee;'>
+                        <td style='padding:6px 0;'><b>Total Genes Tested</b></td>
+                        <td style='padding:6px 0;'>{len(result_df)}</td>
+                        <td style='padding:6px 0;'><b>Significant Genes</b></td>
+                        <td style='padding:6px 0;'>{total_sig}</td>
+                    </tr>
+                    <tr style='border-bottom:1px solid #eee;'>
+                        <td style='padding:6px 0;'><b>Upregulated</b></td>
+                        <td style='padding:6px 0;'>{total_up}</td>
+                        <td style='padding:6px 0;'><b>Downregulated</b></td>
+                        <td style='padding:6px 0;'>{total_down}</td>
+                    </tr>
+                    <tr>
+                        <td style='padding:6px 0;'><b>Threshold</b></td>
+                        <td style='padding:6px 0;'>|log2FC| > 1, p &lt; 0.05</td>
+                        <td style='padding:6px 0;'><b>Test Used</b></td>
+                        <td style='padding:6px 0;'>Independent t-test (vectorized)</td>
+                    </tr>
+                </table>
+                <br>
+                <p style='margin:0; font-size:12px; color:#888;'>
+                    ℹ️ Gene labels showing Probe IDs (e.g. 204533_at) are Affymetrix microarray identifiers.
+                    These map to specific genes on the human genome and can be cross-referenced
+                    using the NCBI Gene database or the dataset platform annotation file (GPL).
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+
+        else:
+            st.info("No significant genes detected. Try adjusting your group assignments or thresholds.")
+
+        # ── Pathway Enrichment ──
+        st.markdown("---")
+        st.subheader("🔗 Step 4: Pathway Enrichment Analysis")
 
         with st.expander("ℹ️ What is Pathway Enrichment?"):
             st.markdown("""
@@ -522,7 +647,7 @@ def show():
                             st.session_state["pathway_results"] = pathway_df
                             st.success(f"✅ Found {len(pathway_df)} enriched pathways!")
                         else:
-                            st.info("No significantly enriched pathways found. Try a different gene set or database.")
+                            st.info("No significantly enriched pathways found.")
                     except Exception as e:
                         st.error(f"❌ Pathway enrichment failed: {str(e)}")
         else:
@@ -530,9 +655,12 @@ def show():
 
         if "pathway_results" in st.session_state:
             pathway_df = st.session_state["pathway_results"]
+
             with st.expander("📋 View Pathway Table"):
-                st.dataframe(pathway_df[["Term", "Overlap", "P-value", "Genes"]].reset_index(drop=True),
-                             use_container_width=True)
+                st.dataframe(
+                    pathway_df[["Term", "Overlap", "P-value", "Genes"]].reset_index(drop=True),
+                    use_container_width=True
+                )
 
             fig2 = px.bar(
                 pathway_df.head(10),
@@ -545,10 +673,13 @@ def show():
                 template="plotly_white",
                 height=450
             )
-            fig2.update_layout(yaxis=dict(autorange="reversed"), coloraxis_showscale=False)
+            fig2.update_layout(
+                yaxis=dict(autorange="reversed"),
+                coloraxis_showscale=False
+            )
             st.plotly_chart(fig2, use_container_width=True)
 
-        # MENTOR FIX: Download Report
+        # ── Download Results ──
         st.markdown("---")
         st.subheader("📥 Download Results")
         st.markdown("Export your findings — suitable for research papers, clinical reports, or presentations.")
@@ -575,7 +706,6 @@ def show():
                 )
 
         with col3:
-            # MENTOR FIX: Full analysis report
             report_data = generate_report(
                 result_df,
                 st.session_state.get("current_accession_report", "Custom"),
