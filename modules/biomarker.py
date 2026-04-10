@@ -6,7 +6,7 @@ from scipy import stats
 import GEOparse
 import requests
 
-def run():
+def show():
     st.header("🔬 Biomarker Discovery")
     st.markdown("Identify differentially expressed genes between ALL and AML leukemia subtypes.")
 
