@@ -7,3 +7,4 @@ gseapy
 requests
 scikit-learn
 lifelines
+GEOparse
