@@ -46,7 +46,7 @@ def _load_golub() -> tuple[pd.DataFrame, pd.Series]:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def run():
+def show():
     st.header("🩺 Survival Prediction")
     st.markdown(
         "Train machine learning models on gene expression data to classify "
