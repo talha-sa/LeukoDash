@@ -134,7 +134,6 @@ def run_differential_expression(df_json, group1_cols, group2_cols):
         "Neg_Log10_Pvalue": np.round(neg_log10_pval, 3)
     })
 
-    # Base significant column — will be overridden by sliders in show()
     result_df["Significant"] = (
         (result_df["Log2FC"].abs() > 1) &
         (result_df["P_Value"] < 0.05)
@@ -150,13 +149,19 @@ def run_differential_expression(df_json, group1_cols, group2_cols):
 
 
 # ─────────────────────────────────────────────
-# Pathway Enrichment
+# ✅ FIX: Pathway Enrichment — gene names forced to string
 # ─────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def run_pathway_enrichment(gene_tuple, database="KEGG_2021_Human"):
     try:
+        # ✅ Convert all to string — fixes 'int object has no attribute strip'
+        gene_list = [str(g).strip() for g in gene_tuple if str(g).strip() != ""]
+
+        if not gene_list:
+            return None, "No valid gene names found to run enrichment."
+
         enr = gp.enrichr(
-            gene_list=list(gene_tuple),
+            gene_list=gene_list,
             gene_sets=database,
             organism="human",
             outdir=None,
@@ -422,7 +427,7 @@ def show():
         st.markdown("---")
         st.subheader("📊 Step 3: Results")
 
-        # ✅ NEW: Threshold sliders
+        # Threshold sliders
         with st.expander("⚙️ Adjust Significance Thresholds", expanded=True):
             st.markdown("Move the sliders to change cutoffs — volcano plot and gene counts update instantly.")
             sl1, sl2 = st.columns(2)
@@ -448,7 +453,7 @@ def show():
                 )
             st.info(f"📌 Active thresholds: p < **{pval_threshold}** | |log2FC| > **{log2fc_threshold}**")
 
-        # ✅ Recalculate significance based on slider values
+        # Recalculate significance based on slider values
         result_df["Significant"] = (
             (result_df["Log2FC"].abs() > log2fc_threshold) &
             (result_df["P_Value"] < pval_threshold)
@@ -508,7 +513,7 @@ def show():
             render_mode=render_mode
         )
 
-        # ✅ Threshold lines use slider values
+        # Threshold lines use slider values
         fig.add_hline(
             y=-np.log10(pval_threshold),
             line_dash="dash",
@@ -674,7 +679,9 @@ def show():
             """)
 
         if len(sig_genes) > 0:
-            gene_tuple = tuple(sig_genes["Gene"].head(100).tolist())
+            # ✅ FIX: Force all gene names to string before passing
+            gene_tuple = tuple(str(g) for g in sig_genes["Gene"].head(100).tolist())
+
             if st.button("🔍 Run Pathway Enrichment"):
                 with st.spinner("Querying Enrichr database... ⏳"):
                     try:
