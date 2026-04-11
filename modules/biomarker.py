@@ -58,18 +58,14 @@ def fetch_geo_data(accession, max_genes=1000, max_samples=None):
         del chunks
         gc.collect()
 
-        # FIX 2: Sample subsetting
         if max_samples is not None and df.shape[1] > max_samples:
             df = df.iloc[:, :max_samples]
 
-        # Gene limit
         if df.shape[0] > max_genes:
             top_genes = df.var(axis=1).nlargest(max_genes).index
             df = df.loc[top_genes]
 
-        # FIX 4: Drop zero variance genes
         df = drop_zero_variance_genes(df)
-
         df = df.astype("float32")
         gc.collect()
         return df, None
@@ -138,6 +134,7 @@ def run_differential_expression(df_json, group1_cols, group2_cols):
         "Neg_Log10_Pvalue": np.round(neg_log10_pval, 3)
     })
 
+    # Base significant column — will be overridden by sliders in show()
     result_df["Significant"] = (
         (result_df["Log2FC"].abs() > 1) &
         (result_df["P_Value"] < 0.05)
@@ -214,8 +211,9 @@ def show():
         1. **Load Data** — Fetch from GEO using accession number (e.g. GSE1432) or upload your own CSV
         2. **Define Groups** — Assign samples to Group 1 (ALL) and Group 2 (AML)
         3. **Run Analysis** — Differential expression using vectorized t-tests
-        4. **Explore Results** — Volcano plot, significant genes table, pathway enrichment
-        5. **Download Report** — Export results as CSV for use in papers or presentations
+        4. **Adjust Thresholds** — Use sliders to change p-value and log2FC cutoffs live
+        5. **Explore Results** — Volcano plot, significant genes table, pathway enrichment
+        6. **Download Report** — Export results as CSV for use in papers or presentations
 
         **Supported accession formats:** GSE followed by numbers only (e.g. GSE1432, GSE13159)
 
@@ -268,7 +266,7 @@ def show():
             if not accession:
                 st.warning("⚠️ Please enter an accession number.")
             elif not accession.strip().upper().startswith("GSE"):
-                st.error("❌ Invalid format. Accession must start with 'GSE' (e.g. GSE1432). SRP, GPL formats are not supported.")
+                st.error("❌ Invalid format. Accession must start with 'GSE' (e.g. GSE1432).")
             else:
                 progress = st.progress(0)
                 status = st.empty()
@@ -343,7 +341,7 @@ def show():
 
                 except Exception as e:
                     progress.empty()
-                    st.error(f"❌ Could not read file: {str(e)}\n\nMake sure your CSV has genes as rows and samples as columns.")
+                    st.error(f"❌ Could not read file: {str(e)}")
 
     # ── Data Loaded ──
     if df is not None and not df.empty:
@@ -417,26 +415,63 @@ def show():
 
     # ── Results ──
     if "de_results" in st.session_state:
-        result_df = st.session_state["de_results"]
+        result_df = st.session_state["de_results"].copy()
         group1_name = st.session_state.get("group1_name", "Group 1")
         group2_name = st.session_state.get("group2_name", "Group 2")
+
+        st.markdown("---")
+        st.subheader("📊 Step 3: Results")
+
+        # ✅ NEW: Threshold sliders
+        with st.expander("⚙️ Adjust Significance Thresholds", expanded=True):
+            st.markdown("Move the sliders to change cutoffs — volcano plot and gene counts update instantly.")
+            sl1, sl2 = st.columns(2)
+            with sl1:
+                pval_threshold = st.slider(
+                    "P-value threshold",
+                    min_value=0.001,
+                    max_value=0.1,
+                    value=0.05,
+                    step=0.001,
+                    format="%.3f",
+                    help="Lower = stricter. Standard cutoff is 0.05"
+                )
+            with sl2:
+                log2fc_threshold = st.slider(
+                    "Log2 Fold Change threshold",
+                    min_value=0.5,
+                    max_value=3.0,
+                    value=1.0,
+                    step=0.1,
+                    format="%.1f",
+                    help="Higher = stricter. Standard cutoff is 1.0 (= 2x fold change)"
+                )
+            st.info(f"📌 Active thresholds: p < **{pval_threshold}** | |log2FC| > **{log2fc_threshold}**")
+
+        # ✅ Recalculate significance based on slider values
+        result_df["Significant"] = (
+            (result_df["Log2FC"].abs() > log2fc_threshold) &
+            (result_df["P_Value"] < pval_threshold)
+        )
+        result_df["Direction"] = np.select(
+            [result_df["Log2FC"] > log2fc_threshold,
+             result_df["Log2FC"] < -log2fc_threshold],
+            ["Upregulated", "Downregulated"],
+            default="Not Significant"
+        )
 
         sig_genes = result_df[result_df["Significant"]]
         up_genes = result_df[result_df["Direction"] == "Upregulated"]
         down_genes = result_df[result_df["Direction"] == "Downregulated"]
 
-        st.markdown("---")
-        st.subheader("📊 Step 3: Results")
-
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total Genes", len(result_df))
-        m2.metric("Significant", len(sig_genes), delta="p<0.05 |log2FC|>1")
+        m2.metric("Significant", len(sig_genes),
+                  delta=f"p<{pval_threshold} |log2FC|>{log2fc_threshold}")
         m3.metric(f"↑ {group2_name}", len(up_genes))
         m4.metric(f"↓ {group2_name}", len(down_genes))
 
-        # ─────────────────────────────────────────────
-        # ✅ NEW: Improved Volcano Plot
-        # ─────────────────────────────────────────────
+        # ── Volcano Plot ──
         st.subheader("🌋 Volcano Plot")
 
         with st.expander("ℹ️ How to read this plot"):
@@ -444,8 +479,8 @@ def show():
             - **Red dots** = Upregulated genes in Group 2
             - **Blue dots** = Downregulated genes in Group 2
             - **Grey dots** = Not statistically significant
-            - **Vertical dashed lines** = Log2 Fold Change threshold (±1)
-            - **Horizontal dashed line** = p-value cutoff (p = 0.05)
+            - **Vertical dashed lines** = Log2 Fold Change threshold (adjustable)
+            - **Horizontal dashed line** = P-value cutoff (adjustable)
             - **Top-right corner** = Significantly upregulated biomarkers
             - **Top-left corner** = Significantly downregulated biomarkers
             - **Gene labels** = Probe IDs from Affymetrix microarray (cross-reference via NCBI Gene)
@@ -473,19 +508,21 @@ def show():
             render_mode=render_mode
         )
 
-        # ✅ NEW: Colored threshold lines
+        # ✅ Threshold lines use slider values
         fig.add_hline(
-            y=-np.log10(0.05),
+            y=-np.log10(pval_threshold),
             line_dash="dash",
             line_color="gray",
             line_width=1.5,
-            annotation_text="p = 0.05",
+            annotation_text=f"p = {pval_threshold}",
             annotation_position="right"
         )
-        fig.add_vline(x=1, line_dash="dash", line_color="#e74c3c", line_width=1.2)
-        fig.add_vline(x=-1, line_dash="dash", line_color="#2980b9", line_width=1.2)
+        fig.add_vline(x=log2fc_threshold, line_dash="dash",
+                      line_color="#e74c3c", line_width=1.2)
+        fig.add_vline(x=-log2fc_threshold, line_dash="dash",
+                      line_color="#2980b9", line_width=1.2)
 
-        # ✅ NEW: Quadrant labels
+        # Quadrant labels
         y_max = result_df["Neg_Log10_Pvalue"].max()
         x_max = result_df["Log2FC"].abs().max()
 
@@ -512,7 +549,7 @@ def show():
             borderpad=4
         )
 
-        # ✅ NEW: Cleaned probe ID labels
+        # Cleaned probe ID labels
         top_label = sig_genes.nsmallest(10, "P_Value")
         for _, row in top_label.iterrows():
             gene_name = str(row["Gene"])
@@ -538,11 +575,7 @@ def show():
 
         fig.update_layout(
             legend_title_text="Expression Direction",
-            legend=dict(
-                bgcolor="white",
-                bordercolor="#ddd",
-                borderwidth=1
-            )
+            legend=dict(bgcolor="white", bordercolor="#ddd", borderwidth=1)
         )
 
         st.plotly_chart(fig, use_container_width=True)
@@ -555,9 +588,7 @@ def show():
                 use_container_width=True
             )
 
-        # ─────────────────────────────────────────────
-        # ✅ NEW: Biological Insight Box
-        # ─────────────────────────────────────────────
+        # ── Biological Insight Box ──
         st.markdown("---")
         st.subheader("🧠 Biological Interpretation")
 
@@ -605,11 +636,17 @@ def show():
                         <td style='padding:6px 0;'><b>Downregulated</b></td>
                         <td style='padding:6px 0;'>{total_down}</td>
                     </tr>
+                    <tr style='border-bottom:1px solid #eee;'>
+                        <td style='padding:6px 0;'><b>P-value Threshold</b></td>
+                        <td style='padding:6px 0;'>p &lt; {pval_threshold}</td>
+                        <td style='padding:6px 0;'><b>Log2FC Threshold</b></td>
+                        <td style='padding:6px 0;'>|log2FC| &gt; {log2fc_threshold}</td>
+                    </tr>
                     <tr>
-                        <td style='padding:6px 0;'><b>Threshold</b></td>
-                        <td style='padding:6px 0;'>|log2FC| > 1, p &lt; 0.05</td>
                         <td style='padding:6px 0;'><b>Test Used</b></td>
                         <td style='padding:6px 0;'>Independent t-test (vectorized)</td>
+                        <td style='padding:6px 0;'><b>Comparison</b></td>
+                        <td style='padding:6px 0;'>{group2_name} vs {group1_name}</td>
                     </tr>
                 </table>
                 <br>
@@ -617,12 +654,13 @@ def show():
                     ℹ️ Gene labels showing Probe IDs (e.g. 204533_at) are Affymetrix microarray identifiers.
                     These map to specific genes on the human genome and can be cross-referenced
                     using the NCBI Gene database or the dataset platform annotation file (GPL).
+                    Current thresholds: p &lt; {pval_threshold} and |log2FC| &gt; {log2fc_threshold}.
                 </p>
             </div>
             """, unsafe_allow_html=True)
 
         else:
-            st.info("No significant genes detected. Try adjusting your group assignments or thresholds.")
+            st.info("No significant genes detected with current thresholds. Try relaxing the sliders above.")
 
         # ── Pathway Enrichment ──
         st.markdown("---")
@@ -651,7 +689,7 @@ def show():
                     except Exception as e:
                         st.error(f"❌ Pathway enrichment failed: {str(e)}")
         else:
-            st.info("No significant genes found. Try adjusting your group assignments.")
+            st.info("No significant genes found with current thresholds. Try relaxing the sliders above.")
 
         if "pathway_results" in st.session_state:
             pathway_df = st.session_state["pathway_results"]
@@ -702,7 +740,7 @@ def show():
                     data=sig_genes.to_csv(index=False),
                     file_name="leukodash_significant_genes.csv",
                     mime="text/csv",
-                    help="Only statistically significant genes (p<0.05, |log2FC|>1)"
+                    help="Only statistically significant genes based on current thresholds"
                 )
 
         with col3:
