@@ -18,7 +18,6 @@ import mygene
 def fetch_geo_data(accession, max_genes=1000, max_samples=None):
     try:
         accession = accession.strip().upper()
-
         if not accession.startswith("GSE") or not accession[3:].isdigit():
             return None, "❌ Invalid accession format. Use GSE followed by numbers (e.g. GSE1432)"
 
@@ -93,25 +92,18 @@ def drop_zero_variance_genes(df):
 
 
 # ─────────────────────────────────────────────
-# UPGRADE 3: NORMALIZATION CHECK
+# NORMALIZATION CHECK
 # ─────────────────────────────────────────────
 def check_normalization(df):
-    """
-    Checks if data looks like log2 normalized microarray data.
-    Raw RNA-seq counts typically go up to 100,000+.
-    Log2 microarray data typically ranges from 4 to 16.
-    """
     try:
         max_val = float(df.max().max())
         median_val = float(df.median().median())
-
         if max_val > 1000:
             st.warning(
-                f"⚠️ Normalization Warning: Your data has a maximum value of "
-                f"{round(max_val):,} which suggests raw count data. "
-                f"LeukoDash is optimized for log2-normalized microarray expression values. "
-                f"Raw RNA-seq counts will produce distorted volcano plots and unreliable t-test results. "
-                f"Please apply log2 normalization before uploading."
+                f"⚠️ Normalization Warning: Maximum value is {round(max_val):,}. "
+                f"This looks like raw count data. LeukoDash is optimized for "
+                f"log2-normalized microarray data. Raw RNA-seq counts will produce "
+                f"distorted results. Please normalize before uploading."
             )
         else:
             st.success(
@@ -136,14 +128,10 @@ def clean_labels(labels, df_columns):
 
 
 # ─────────────────────────────────────────────
-# UPGRADE 2: VECTORIZED DE WITH FDR CORRECTION
+# VECTORIZED DE WITH FDR CORRECTION
 # ─────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def run_differential_expression(df_json, group1_cols, group2_cols):
-    """
-    Fully vectorized t-test with Benjamini-Hochberg FDR correction.
-    FDR correction prevents false positives from multiple testing.
-    """
     df = pd.read_json(io.StringIO(df_json))
     g1 = df[list(group1_cols)].values.astype("float32")
     g2 = df[list(group2_cols)].values.astype("float32")
@@ -157,7 +145,6 @@ def run_differential_expression(df_json, group1_cols, group2_cols):
     pvalues = np.clip(pvalues, 1e-300, 1.0)
     neg_log10_pval = -np.log10(pvalues)
 
-    # ✅ UPGRADE 2: Benjamini-Hochberg FDR correction
     fdr_pvalues = false_discovery_control(pvalues, method="bh")
     fdr_pvalues = np.clip(fdr_pvalues, 1e-300, 1.0)
 
@@ -172,7 +159,6 @@ def run_differential_expression(df_json, group1_cols, group2_cols):
         "Neg_Log10_Pvalue": np.round(neg_log10_pval, 3)
     })
 
-    # ✅ Significance now based on FDR corrected p-value
     result_df["Significant"] = (
         (result_df["Log2FC"].abs() > 1) &
         (result_df["FDR_P_Value"] < 0.05)
@@ -188,20 +174,13 @@ def run_differential_expression(df_json, group1_cols, group2_cols):
 
 
 # ─────────────────────────────────────────────
-# UPGRADE 1: MYGENE PROBE TO SYMBOL MAPPING
+# MYGENE PROBE TO SYMBOL MAPPING
 # ─────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def get_gene_mapping(probe_tuple):
-    """
-    Converts Affymetrix Probe IDs to HGNC Gene Symbols using MyGene.
-    Only maps significant genes to avoid API rate limits.
-    Falls back gracefully if mapping fails.
-    """
     try:
         mg = mygene.MyGeneInfo()
         probe_list = list(probe_tuple)
-
-        # Query mygene for symbol mapping
         result = mg.querymany(
             probe_list,
             scopes="reporter",
@@ -210,19 +189,14 @@ def get_gene_mapping(probe_tuple):
             returnall=False,
             verbose=False
         )
-
-        # Build mapping dictionary
         mapping = {}
         for item in result:
             query = item.get("query", "")
             symbol = item.get("symbol", None)
             if symbol and not item.get("notfound", False):
                 mapping[query] = symbol
-
         return mapping
-
     except Exception:
-        # If mapping fails return empty dict — probe IDs used as fallback
         return {}
 
 
@@ -232,12 +206,9 @@ def get_gene_mapping(probe_tuple):
 @st.cache_data(show_spinner=False)
 def run_pathway_enrichment(gene_tuple, database="KEGG_2021_Human"):
     try:
-        # ✅ Convert all to string — fixes int has no attribute strip
         gene_list = [str(g).strip() for g in gene_tuple if str(g).strip() != ""]
-
         if not gene_list:
             return None, "No valid gene names to run enrichment."
-
         enr = gp.enrichr(
             gene_list=gene_list,
             gene_sets=database,
@@ -319,7 +290,6 @@ def show():
     group2_cols = []
     current_accession = "Custom"
 
-    # ── GEO Fetch ──
     if "GEO" in input_method:
         with st.expander("💡 GEO Accession Help"):
             st.markdown("""
@@ -329,7 +299,6 @@ def show():
             - For large datasets (>500 samples) enable subsetting below
             """)
 
-        # ✅ UPGRADE 4: Try Example button next to input
         col_acc, col_genes, col_example = st.columns([3, 2, 1])
         with col_acc:
             accession = st.text_input(
@@ -345,7 +314,7 @@ def show():
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("🧪 Example"):
                 accession = "GSE1432"
-                st.info("Loaded example: GSE1432")
+                st.info("Example: GSE1432")
 
         with st.expander("⚙️ Large Dataset Options"):
             enable_subset = st.checkbox(
@@ -397,25 +366,16 @@ def show():
                     st.session_state["geo_accession"] = accession.strip().upper()
                     st.session_state["current_dataset"] = accession.strip().upper()
                     current_accession = accession.strip().upper()
-
-                    # ✅ UPGRADE 3: Normalization check on load
                     check_normalization(df)
-
-                    st.success(
-                        f"✅ Loaded: {df.shape[0]} genes × {df.shape[1]} samples"
-                    )
+                    st.success(f"✅ Loaded: {df.shape[0]} genes × {df.shape[1]} samples")
                     if enable_subset and max_samples:
                         st.info(f"📊 Subset mode: first {max_samples} samples only")
 
         if "geo_df" in st.session_state:
             df = st.session_state["geo_df"]
             current_accession = st.session_state.get("geo_accession", "GEO")
-            st.info(
-                f"📦 Active: **{current_accession}** — "
-                f"{df.shape[0]} genes × {df.shape[1]} samples"
-            )
+            st.info(f"📦 Active: **{current_accession}** — {df.shape[0]} genes × {df.shape[1]} samples")
 
-    # ── CSV Upload ──
     else:
         with st.expander("📋 CSV Format Requirements"):
             st.markdown("""
@@ -425,9 +385,7 @@ def show():
             - Missing values handled automatically
             """)
 
-        uploaded_file = st.file_uploader(
-            "Upload gene expression CSV", type=["csv"]
-        )
+        uploaded_file = st.file_uploader("Upload gene expression CSV", type=["csv"])
         if uploaded_file:
             with st.spinner("Reading file..."):
                 progress = st.progress(0)
@@ -447,34 +405,25 @@ def show():
                     gc.collect()
                     progress.progress(100)
                     progress.empty()
-
-                    # ✅ UPGRADE 3: Normalization check on upload
                     check_normalization(df)
-                    st.success(
-                        f"✅ Loaded: {df.shape[0]} genes × {df.shape[1]} samples"
-                    )
+                    st.success(f"✅ Loaded: {df.shape[0]} genes × {df.shape[1]} samples")
 
                 except Exception as e:
                     progress.empty()
                     st.error(f"❌ Could not read file: {str(e)}")
 
-    # ── Data Loaded ──
     if df is not None and not df.empty:
         st.session_state.total_patients = df.shape[1]
         st.session_state.gene_features = f"{df.shape[0]:,}"
         st.session_state.data_loaded = True
 
-        # Memory usage indicator
-        data_size_mb = round(
-            df.memory_usage(deep=True).sum() / 1024 / 1024, 2
-        )
+        data_size_mb = round(df.memory_usage(deep=True).sum() / 1024 / 1024, 2)
         st.caption(f"📊 Dataset memory usage: {data_size_mb} MB")
 
         with st.expander("👁️ Data Preview"):
-            st.dataframe(df.head(5), use_container_width=True)
-            st.caption(
-                f"Showing 5 of {df.shape[0]} genes × {df.shape[1]} samples"
-            )
+            # ✅ FIX: use_container_width replaced with width
+            st.dataframe(df.head(5), width='stretch')
+            st.caption(f"Showing 5 of {df.shape[0]} genes × {df.shape[1]} samples")
 
         st.markdown("---")
         st.subheader("👥 Step 2: Define Sample Groups")
@@ -498,10 +447,7 @@ def show():
 
         overlap = set(group1_cols) & set(group2_cols)
         if overlap:
-            st.error(
-                f"❌ {len(overlap)} sample(s) in both groups. "
-                f"Remove duplicates before proceeding."
-            )
+            st.error(f"❌ {len(overlap)} sample(s) in both groups. Remove duplicates.")
 
         if st.button("🚀 Run Differential Expression Analysis"):
             if not group1_cols or not group2_cols:
@@ -518,9 +464,7 @@ def show():
                     try:
                         df_json = df.to_json()
                         progress.progress(40)
-                        status.text(
-                            "🔬 Running vectorized t-tests + FDR correction..."
-                        )
+                        status.text("🔬 Running vectorized t-tests + FDR correction...")
                         result_df = run_differential_expression(
                             df_json,
                             tuple(group1_cols),
@@ -537,17 +481,13 @@ def show():
                         progress.progress(100)
                         status.empty()
                         progress.empty()
-                        st.success(
-                            "✅ Analysis complete! "
-                            "Significance based on FDR corrected p-values."
-                        )
+                        st.success("✅ Analysis complete! Significance based on FDR corrected p-values.")
 
                     except Exception as e:
                         progress.empty()
                         status.empty()
                         st.error(f"❌ Analysis failed: {str(e)}")
 
-    # ── Results ──
     if "de_results" in st.session_state:
         result_df = st.session_state["de_results"].copy()
         group1_name = st.session_state.get("group1_name", "Group 1")
@@ -556,20 +496,13 @@ def show():
         st.markdown("---")
         st.subheader("📊 Step 3: Results")
 
-        # FDR info box
         st.info(
             "✅ **Statistical Rigor:** Significance is based on "
-            "**Benjamini-Hochberg FDR corrected p-values** "
-            "(FDR < 0.05) to control false discovery rate across "
-            "multiple gene tests."
+            "**Benjamini-Hochberg FDR corrected p-values** (FDR < 0.05)."
         )
 
-        # Threshold sliders
         with st.expander("⚙️ Adjust Significance Thresholds", expanded=True):
-            st.markdown(
-                "Move sliders to update cutoffs — "
-                "volcano plot and counts update instantly."
-            )
+            st.markdown("Move sliders to update cutoffs instantly.")
             sl1, sl2 = st.columns(2)
             with sl1:
                 pval_threshold = st.slider(
@@ -585,12 +518,8 @@ def show():
                     value=1.0, step=0.1, format="%.1f",
                     help="Standard cutoff is 1.0 (2x fold change)"
                 )
-            st.info(
-                f"📌 Thresholds: FDR p < **{pval_threshold}** "
-                f"| |log2FC| > **{log2fc_threshold}**"
-            )
+            st.info(f"📌 Thresholds: FDR p < **{pval_threshold}** | |log2FC| > **{log2fc_threshold}**")
 
-        # Recalculate with slider values
         result_df["Significant"] = (
             (result_df["Log2FC"].abs() > log2fc_threshold) &
             (result_df["FDR_P_Value"] < pval_threshold)
@@ -608,12 +537,10 @@ def show():
 
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total Genes", len(result_df))
-        m2.metric("Significant (FDR)", len(sig_genes),
-                  delta=f"FDR<{pval_threshold}")
+        m2.metric("Significant (FDR)", len(sig_genes), delta=f"FDR<{pval_threshold}")
         m3.metric(f"↑ {group2_name}", len(up_genes))
         m4.metric(f"↓ {group2_name}", len(down_genes))
 
-        # ── Volcano Plot ──
         st.subheader("🌋 Volcano Plot")
 
         with st.expander("ℹ️ How to read this plot"):
@@ -623,7 +550,6 @@ def show():
             - **Grey dots** = Not significant after FDR correction
             - **Vertical lines** = Log2 Fold Change threshold
             - **Horizontal line** = FDR p-value cutoff
-            - **Labels** = Probe IDs (use Gene Symbol Mapper below)
             """)
 
         color_map = {
@@ -635,21 +561,12 @@ def show():
 
         fig = px.scatter(
             result_df,
-            x="Log2FC",
-            y="Neg_Log10_Pvalue",
+            x="Log2FC", y="Neg_Log10_Pvalue",
             color="Direction",
             color_discrete_map=color_map,
             hover_name="Gene",
-            hover_data={
-                "Log2FC": ":.2f",
-                "P_Value": ":.4f",
-                "FDR_P_Value": ":.4f",
-                "Direction": True
-            },
-            labels={
-                "Log2FC": "Log2 Fold Change",
-                "Neg_Log10_Pvalue": "-Log10(P-value)"
-            },
+            hover_data={"Log2FC": ":.2f", "P_Value": ":.4f", "FDR_P_Value": ":.4f", "Direction": True},
+            labels={"Log2FC": "Log2 Fold Change", "Neg_Log10_Pvalue": "-Log10(P-value)"},
             title=f"Volcano Plot: {group2_name} vs {group1_name}",
             template="plotly_white",
             height=580,
@@ -662,14 +579,8 @@ def show():
             annotation_text=f"FDR p = {pval_threshold}",
             annotation_position="right"
         )
-        fig.add_vline(
-            x=log2fc_threshold,
-            line_dash="dash", line_color="#e74c3c", line_width=1.2
-        )
-        fig.add_vline(
-            x=-log2fc_threshold,
-            line_dash="dash", line_color="#2980b9", line_width=1.2
-        )
+        fig.add_vline(x=log2fc_threshold, line_dash="dash", line_color="#e74c3c", line_width=1.2)
+        fig.add_vline(x=-log2fc_threshold, line_dash="dash", line_color="#2980b9", line_width=1.2)
 
         y_max = result_df["Neg_Log10_Pvalue"].max()
         x_max = result_df["Log2FC"].abs().max()
@@ -698,7 +609,6 @@ def show():
                 display_name = f"Probe:{gene_name.split('_')[0]}"
             else:
                 display_name = gene_name
-
             fig.add_annotation(
                 x=row["Log2FC"], y=row["Neg_Log10_Pvalue"],
                 text=display_name, showarrow=True,
@@ -712,25 +622,18 @@ def show():
             legend=dict(bgcolor="white", bordercolor="#ddd", borderwidth=1)
         )
 
+        # ✅ FIX: use_container_width replaced
         st.plotly_chart(fig, use_container_width=True)
         gc.collect()
 
-        # Significant genes table
         with st.expander("🧬 View Top 20 Significant Genes (FDR)"):
-            display_cols = [
-                "Gene", "Log2FC", "P_Value",
-                "FDR_P_Value", "Fold_Change", "Direction"
-            ]
+            display_cols = ["Gene", "Log2FC", "P_Value", "FDR_P_Value", "Fold_Change", "Direction"]
             st.dataframe(
                 sig_genes[display_cols].head(20).reset_index(drop=True),
-                use_container_width=True
+                width='stretch'
             )
-            st.caption(
-                "FDR_P_Value = Benjamini-Hochberg corrected p-value. "
-                "Significance based on FDR < " + str(pval_threshold)
-            )
+            st.caption(f"FDR_P_Value = Benjamini-Hochberg corrected. Threshold: FDR < {pval_threshold}")
 
-        # ── Biological Insight Box ──
         st.markdown("---")
         st.subheader("🧠 Biological Interpretation")
 
@@ -744,11 +647,9 @@ def show():
             dominant_pct = int((dominant_count / total_sig) * 100)
             dominant_color = "#2980b9" if dominant == "Downregulated" else "#e74c3c"
             biological_meaning = (
-                f"{group2_name} shows <b>massive suppression</b> of key "
-                f"genetic pathways compared to {group1_name}."
+                f"{group2_name} shows <b>massive suppression</b> of key genetic pathways compared to {group1_name}."
                 if dominant == "Downregulated"
-                else f"{group2_name} shows <b>overactivation</b> of key "
-                f"genetic pathways compared to {group1_name}."
+                else f"{group2_name} shows <b>overactivation</b> of key genetic pathways compared to {group1_name}."
             )
 
             st.markdown(f"""
@@ -756,18 +657,13 @@ def show():
                         padding:20px; border-radius:10px;
                         box-shadow:0 2px 10px rgba(0,0,0,0.07); margin-top:10px;'>
                 <h4 style='color:{dominant_color}; margin:0 0 12px 0;'>
-                    📌 Key Finding: {dominant} genes dominate
-                    ({dominant_pct}% of FDR-significant genes)
+                    📌 Key Finding: {dominant} genes dominate ({dominant_pct}% of FDR-significant genes)
                 </h4>
-                <p style='color:#444; font-size:15px; margin:0 0 16px 0;'>
-                    {biological_meaning}
-                </p>
+                <p style='color:#444; font-size:15px; margin:0 0 16px 0;'>{biological_meaning}</p>
                 <table style='width:100%; font-size:14px; border-collapse:collapse;'>
                     <tr style='border-bottom:1px solid #eee;'>
                         <td style='padding:6px 0;'><b>Dataset</b></td>
-                        <td style='padding:6px 0;'>
-                            {st.session_state.get("geo_accession", "Custom")}
-                        </td>
+                        <td style='padding:6px 0;'>{st.session_state.get("geo_accession", "Custom")}</td>
                         <td style='padding:6px 0;'><b>Comparison</b></td>
                         <td style='padding:6px 0;'>{group2_name} vs {group1_name}</td>
                     </tr>
@@ -804,7 +700,6 @@ def show():
             </div>
             """, unsafe_allow_html=True)
 
-            # ✅ UPGRADE 4: Top Biomarker Highlight Box
             st.markdown("<br>", unsafe_allow_html=True)
             top_gene_row = sig_genes.iloc[0]
             top_gene = str(top_gene_row["Gene"])
@@ -816,9 +711,7 @@ def show():
             st.markdown(f"""
             <div style='background:#f0faf0; border-left:5px solid #27ae60;
                         padding:16px; border-radius:10px; margin-top:8px;'>
-                <h4 style='color:#27ae60; margin:0 0 8px 0;'>
-                    🔬 Top Biomarker Identified
-                </h4>
+                <h4 style='color:#27ae60; margin:0 0 8px 0;'>🔬 Top Biomarker Identified</h4>
                 <p style='margin:0; font-size:15px; color:#333;'>
                     Gene <code>{top_gene}</code> shows a
                     <b style='color:{direction_color};'>{top_fc}x expression difference</b>
@@ -829,98 +722,58 @@ def show():
             """, unsafe_allow_html=True)
 
         else:
-            st.info(
-                "No significant genes detected with current thresholds. "
-                "Try relaxing the sliders above."
-            )
+            st.info("No significant genes detected. Try relaxing the sliders above.")
 
-        # ── UPGRADE 1: Gene Symbol Mapper ──
         st.markdown("---")
         st.subheader("🧬 Gene Symbol Mapper")
 
         with st.expander("ℹ️ What is this?"):
             st.markdown("""
-            GEO datasets from Affymetrix microarrays use **Probe IDs** like `204533_at`
-            instead of real gene names. This tool converts them to **HGNC Gene Symbols**
-            like `HOXA9` or `MYC` using the MyGene.info database.
-
-            Mapped gene symbols are then used for more accurate **Pathway Enrichment**
-            since KEGG pathways are indexed by gene symbol not probe ID.
+            Converts Affymetrix **Probe IDs** like `204533_at` to real
+            **HGNC Gene Symbols** like `HOXA9` using MyGene.info.
+            Run this before Pathway Enrichment for accurate results.
             """)
 
         if len(sig_genes) > 0:
             if st.button("🔄 Map Probe IDs to Gene Symbols"):
-                with st.spinner(
-                    "Querying MyGene.info API for gene symbols... ⏳"
-                ):
-                    probe_tuple = tuple(
-                        str(g) for g in sig_genes["Gene"].head(100).tolist()
-                    )
+                with st.spinner("Querying MyGene.info API... ⏳"):
+                    probe_tuple = tuple(str(g) for g in sig_genes["Gene"].head(100).tolist())
                     mapping = get_gene_mapping(probe_tuple)
-
                     if mapping:
-                        mapped_count = len(mapping)
                         st.session_state["gene_mapping"] = mapping
-                        st.success(
-                            f"✅ Mapped {mapped_count} probe IDs to gene symbols."
-                        )
-
-                        # Show mapping table
+                        st.success(f"✅ Mapped {len(mapping)} probe IDs to gene symbols.")
                         mapping_df = pd.DataFrame(
                             list(mapping.items()),
                             columns=["Probe ID", "Gene Symbol"]
                         )
-                        with st.expander(
-                            f"📋 View {mapped_count} Mapped Genes"
-                        ):
-                            st.dataframe(
-                                mapping_df.reset_index(drop=True),
-                                use_container_width=True
-                            )
+                        with st.expander(f"📋 View {len(mapping)} Mapped Genes"):
+                            st.dataframe(mapping_df.reset_index(drop=True), width='stretch')
                     else:
                         st.warning(
                             "⚠️ Could not map probe IDs. "
-                            "This may happen if genes are already symbols "
-                            "or if the API is temporarily unavailable. "
                             "Pathway enrichment will proceed with probe IDs."
                         )
         else:
-            st.info(
-                "Run analysis first to enable gene symbol mapping."
-            )
+            st.info("Run analysis first to enable gene symbol mapping.")
 
-        # ── Pathway Enrichment ──
         st.markdown("---")
         st.subheader("🔗 Step 4: Pathway Enrichment Analysis")
 
         with st.expander("ℹ️ What is Pathway Enrichment?"):
             st.markdown("""
-            Maps your significant genes to known biological pathways
-            from the **KEGG database** via Enrichr.
-            This reveals which biological processes are disrupted in leukemia.
+            Maps significant genes to **KEGG biological pathways** via Enrichr.
             **Run Gene Symbol Mapper first** for best results.
             """)
 
         if len(sig_genes) > 0:
-            # ✅ UPGRADE 5: Use mapped symbols if available
             if "gene_mapping" in st.session_state and st.session_state["gene_mapping"]:
                 mapping = st.session_state["gene_mapping"]
                 raw_genes = sig_genes["Gene"].head(100).tolist()
-                gene_list_for_enrichment = [
-                    mapping.get(str(g), str(g)) for g in raw_genes
-                ]
-                st.info(
-                    f"✅ Using **mapped gene symbols** for pathway enrichment "
-                    f"({len(mapping)} genes mapped)."
-                )
+                gene_list_for_enrichment = [mapping.get(str(g), str(g)) for g in raw_genes]
+                st.info(f"✅ Using mapped gene symbols ({len(mapping)} genes mapped).")
             else:
-                gene_list_for_enrichment = [
-                    str(g) for g in sig_genes["Gene"].head(100).tolist()
-                ]
-                st.caption(
-                    "💡 Tip: Run Gene Symbol Mapper above first "
-                    "for more accurate pathway results."
-                )
+                gene_list_for_enrichment = [str(g) for g in sig_genes["Gene"].head(100).tolist()]
+                st.caption("💡 Run Gene Symbol Mapper above for more accurate pathway results.")
 
             gene_tuple = tuple(gene_list_for_enrichment)
 
@@ -932,30 +785,20 @@ def show():
                             st.warning(f"⚠️ {err}")
                         elif pathway_df is not None and not pathway_df.empty:
                             st.session_state["pathway_results"] = pathway_df
-                            st.success(
-                                f"✅ Found {len(pathway_df)} enriched pathways!"
-                            )
+                            st.success(f"✅ Found {len(pathway_df)} enriched pathways!")
                         else:
-                            st.info(
-                                "No significant pathways found. "
-                                "Try running Gene Symbol Mapper first."
-                            )
+                            st.info("No significant pathways found. Run Gene Symbol Mapper first.")
                     except Exception as e:
                         st.error(f"❌ Pathway enrichment failed: {str(e)}")
         else:
-            st.info(
-                "No significant genes found. "
-                "Try relaxing thresholds using the sliders above."
-            )
+            st.info("No significant genes found. Try relaxing thresholds.")
 
         if "pathway_results" in st.session_state:
             pathway_df = st.session_state["pathway_results"]
-
             with st.expander("📋 View Pathway Table"):
                 st.dataframe(
-                    pathway_df[["Term", "Overlap", "P-value", "Genes"]
-                               ].reset_index(drop=True),
-                    use_container_width=True
+                    pathway_df[["Term", "Overlap", "P-value", "Genes"]].reset_index(drop=True),
+                    width='stretch'
                 )
 
             fig2 = px.bar(
@@ -969,57 +812,41 @@ def show():
                 template="plotly_white",
                 height=450
             )
-            fig2.update_layout(
-                yaxis=dict(autorange="reversed"),
-                coloraxis_showscale=False
-            )
+            fig2.update_layout(yaxis=dict(autorange="reversed"), coloraxis_showscale=False)
             st.plotly_chart(fig2, use_container_width=True)
 
-        # ── Download Results ──
         st.markdown("---")
         st.subheader("📥 Download Results")
-        st.markdown(
-            "Export findings — suitable for research papers and presentations."
-        )
 
         col1, col2, col3 = st.columns(3)
-
-        # ✅ UPGRADE 4: All downloads use index=False
         with col1:
             st.download_button(
                 "⬇️ All DE Results (CSV)",
                 data=result_df.to_csv(index=False),
                 file_name="leukodash_DE_results.csv",
-                mime="text/csv",
-                help="Full table with raw and FDR p-values"
+                mime="text/csv"
             )
-
         with col2:
             if len(sig_genes) > 0:
                 st.download_button(
                     "⬇️ Significant Genes (FDR CSV)",
                     data=sig_genes.to_csv(index=False),
                     file_name="leukodash_significant_genes.csv",
-                    mime="text/csv",
-                    help="FDR-significant genes only"
+                    mime="text/csv"
                 )
-
         with col3:
             report_data = generate_report(
                 result_df,
                 st.session_state.get("current_accession_report", "Custom"),
-                group1_name,
-                group2_name
+                group1_name, group2_name
             )
             st.download_button(
                 "⬇️ Full Analysis Report (CSV)",
                 data=report_data,
                 file_name="leukodash_full_report.csv",
-                mime="text/csv",
-                help="Summary + significant genes + FDR stats"
+                mime="text/csv"
             )
 
-        # Gene symbol mapping download
         if "gene_mapping" in st.session_state and st.session_state["gene_mapping"]:
             mapping_df = pd.DataFrame(
                 list(st.session_state["gene_mapping"].items()),
@@ -1029,8 +856,7 @@ def show():
                 "⬇️ Gene Symbol Mapping (CSV)",
                 data=mapping_df.to_csv(index=False),
                 file_name="leukodash_gene_mapping.csv",
-                mime="text/csv",
-                help="Probe ID to HGNC Gene Symbol mapping table"
+                mime="text/csv"
             )
 
     elif df is None:
